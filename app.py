@@ -3073,12 +3073,18 @@ _TOOLTIP_JS = """
   ]},
 
   'Rock Basic': { label:'Rock Basic', cat:'Rock', events: [
+    // d:1 sparse — kick+snare + quarter hi-hats
     {beat:0,   type:'kick',  vel:0.88,d:1},{beat:2,   type:'kick',  vel:0.82,d:1},
     {beat:1,   type:'snare', vel:0.82,d:1},{beat:3,   type:'snare', vel:0.82,d:1},
-    {beat:0,   type:'hihat', vel:0.55,d:1},{beat:0.5, type:'hihat', vel:0.42,d:1},
-    {beat:1,   type:'hihat', vel:0.52,d:1},{beat:1.5, type:'hihat', vel:0.40,d:1},
-    {beat:2,   type:'hihat', vel:0.52,d:1},{beat:2.5, type:'hihat', vel:0.40,d:1},
-    {beat:3,   type:'hihat', vel:0.50,d:1},{beat:3.5, type:'hihat', vel:0.38,d:1},
+    {beat:0,   type:'hihat', vel:0.55,d:1},{beat:1,   type:'hihat', vel:0.50,d:1},
+    {beat:2,   type:'hihat', vel:0.52,d:1},{beat:3,   type:'hihat', vel:0.48,d:1},
+    // d:2 moderate — 8th hi-hats
+    {beat:0.5, type:'hihat', vel:0.42,d:2},{beat:1.5, type:'hihat', vel:0.40,d:2},
+    {beat:2.5, type:'hihat', vel:0.40,d:2},{beat:3.5, type:'hihat', vel:0.38,d:2},
+    // d:3 dense — add syncopated kick + ghost snares to fill
+    {beat:2.5, type:'kick',  vel:0.55,d:3},{beat:0.5, type:'ghost', vel:0.22,d:3},
+    {beat:1.5, type:'ghost', vel:0.20,d:3},{beat:2.5, type:'ghost', vel:0.22,d:3},
+    {beat:3.5, type:'ghost', vel:0.20,d:3},
   ]},
 
   'Rock Groove': { label:'Rock Groove', cat:'Rock', events: [
@@ -3197,17 +3203,21 @@ _TOOLTIP_JS = """
   ]},
 
   'Double Time': { label:'Double Time', cat:'Groove', events: [
-    {beat:0,   type:'kick',  vel:0.88,d:1},{beat:2,   type:'kick',  vel:0.82,d:1},
-    {beat:1,   type:'snare', vel:0.85,d:1},{beat:3,   type:'snare', vel:0.85,d:1},
-    // All 16ths on hi-hat — this IS the double-time feel
-    {beat:0,    type:'hihat',vel:0.55,d:1},{beat:0.25, type:'hihat',vel:0.36,d:1},
-    {beat:0.5,  type:'hihat',vel:0.48,d:1},{beat:0.75, type:'hihat',vel:0.33,d:1},
-    {beat:1,    type:'hihat',vel:0.52,d:1},{beat:1.25, type:'hihat',vel:0.36,d:1},
-    {beat:1.5,  type:'hihat',vel:0.48,d:1},{beat:1.75, type:'hihat',vel:0.30,d:1},
-    {beat:2,    type:'hihat',vel:0.52,d:1},{beat:2.25, type:'hihat',vel:0.36,d:1},
-    {beat:2.5,  type:'hihat',vel:0.48,d:1},{beat:2.75, type:'hihat',vel:0.30,d:1},
-    {beat:3,    type:'hihat',vel:0.52,d:1},{beat:3.25, type:'hihat',vel:0.36,d:1},
-    {beat:3.5,  type:'hihat',vel:0.48,d:1},{beat:3.75, type:'hihat',vel:0.28,d:1},
+    // d:1 sparse — skeleton + quarter hi-hats (clear breathing room)
+    {beat:0,    type:'kick',  vel:0.88,d:1},{beat:2,    type:'kick',  vel:0.82,d:1},
+    {beat:1,    type:'snare', vel:0.85,d:1},{beat:3,    type:'snare', vel:0.85,d:1},
+    {beat:0,    type:'hihat', vel:0.55,d:1},{beat:1,    type:'hihat', vel:0.50,d:1},
+    {beat:2,    type:'hihat', vel:0.52,d:1},{beat:3,    type:'hihat', vel:0.48,d:1},
+    // d:2 moderate — 8th hi-hats fill gaps + syncopated kicks + ghost snares
+    {beat:0.5,  type:'hihat', vel:0.42,d:2},{beat:1.5,  type:'hihat', vel:0.38,d:2},
+    {beat:2.5,  type:'hihat', vel:0.42,d:2},{beat:3.5,  type:'hihat', vel:0.36,d:2},
+    {beat:1.75, type:'kick',  vel:0.58,d:2},{beat:3.5,  type:'kick',  vel:0.52,d:2},
+    {beat:0.5,  type:'ghost', vel:0.22,d:2},{beat:2.5,  type:'ghost', vel:0.20,d:2},
+    // d:3 dense — fill remaining 16th positions; every slot covered, no pauses
+    {beat:0.25, type:'hihat', vel:0.33,d:3},{beat:0.75, type:'hihat', vel:0.28,d:3},
+    {beat:1.25, type:'hihat', vel:0.33,d:3},{beat:1.75, type:'hihat', vel:0.27,d:3},
+    {beat:2.25, type:'hihat', vel:0.33,d:3},{beat:2.75, type:'hihat', vel:0.27,d:3},
+    {beat:3.25, type:'hihat', vel:0.33,d:3},{beat:3.75, type:'hihat', vel:0.25,d:3},
   ]},
 
   'Reggae': { label:'Reggae', cat:'Groove', events: [
