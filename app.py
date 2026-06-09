@@ -1586,6 +1586,19 @@ _TOOLTIP_JS = """
   var _accompTimer     = null;
   var _accompBeatsLeft = 0;   // float beat counter (supports fractional bars/chord)
   var _accompState     = { chords:[], idx:0, nextBarTime:0, bpb:4, beatDur:0.5, barsPerChord:2, style:'Ballad' };
+  var _bassRangeLo = 36, _bassRangeHi = 55;   // C2–G3
+  var _chordRangeLo = 48, _chordRangeHi = 79; // C3–G5
+
+  // ── Melodic response state ────────────────────────────────────────────────
+  var _phraseArmed    = false;
+  var _phraseCapturing = false;
+  var _capturedPhrase  = [];     // [{midi, t, dur}] normalized to t=0 at phrase start
+  var _phraseGapTimer  = null;
+  var _micLastMidi     = -1;
+  var _micLastT        = 0;
+  var _micPitchHist    = [];   // 3-frame median for pitch smoothing
+  var _melodyGain      = null;
+  var PHRASE_GAP_SEC   = 1.2;
   // density: 1=sparse 2=moderate 3=dense 0=off
   var _density = { bass:2, chord:2, drum:1 };
   // humanize (0=robotic, 1=loose feel)
@@ -3472,6 +3485,172 @@ _TOOLTIP_JS = """
     }
   }
 
+  // ── Phrase capture ─────────────────────────────────────────────────────────
+
+  function _melStatus(msg) { var el=document.getElementById('mel-status'); if(el) el.textContent=msg; }
+
+  function _updateArmBtn(active) {
+    var btn = document.getElementById('mel-arm-btn');
+    if (!btn) return;
+    btn.style.background = active ? '#2a7040' : '#1a3050';
+    btn.textContent = active ? '📡 Listening…' : '📡 Arm';
+  }
+
+  function _captureNoteOn(midi) {
+    if (_phraseArmed) {
+      _capturedPhrase = []; _phraseArmed = false; _phraseCapturing = true;
+      _updateArmBtn(false);
+    }
+    clearTimeout(_phraseGapTimer);
+    var now = _audioCtx ? _audioCtx.currentTime : 0;
+    _capturedPhrase.push({midi:midi, t:now, dur:0});
+  }
+
+  function _captureNoteOff(midi) {
+    if (!_phraseCapturing) return;
+    var now = _audioCtx ? _audioCtx.currentTime : 0;
+    for (var i = _capturedPhrase.length-1; i >= 0; i--) {
+      if (_capturedPhrase[i].midi === midi && _capturedPhrase[i].dur === 0) {
+        _capturedPhrase[i].dur = Math.max(0.05, now - _capturedPhrase[i].t);
+        break;
+      }
+    }
+    if (_capturedPhrase.every(function(n){return n.dur > 0;}))
+      _phraseGapTimer = setTimeout(_phraseComplete, PHRASE_GAP_SEC * 1000);
+  }
+
+  function _phraseComplete() {
+    if (!_capturedPhrase.length) { _phraseCapturing = false; return; }
+    var now = _audioCtx ? _audioCtx.currentTime : 0;
+    _capturedPhrase.forEach(function(n){ if(n.dur===0) n.dur = Math.max(0.05, now-n.t); });
+    var t0 = _capturedPhrase[0].t;
+    _capturedPhrase.forEach(function(n){ n.t -= t0; });
+    _capturedPhrase = _capturedPhrase.filter(function(n){ return n.dur >= 0.06; });
+    _phraseCapturing = false; _micLastMidi = -1;
+    _updateArmBtn(false);
+    _melStatus('Captured ' + _capturedPhrase.length + ' note(s) — click ▶ Generate');
+    var autoEl = document.getElementById('mel-auto-respond');
+    if (autoEl && autoEl.checked) setTimeout(function(){ window.generateMelodicResponse&&window.generateMelodicResponse(); }, 200);
+  }
+
+  // ── Melodic response generators ────────────────────────────────────────────
+
+  // Snap captured phrase to 8th-note grid; collapse duplicate onsets
+  function _quantizePhrase(phrase, beatDur) {
+    if (!phrase.length) return phrase;
+    var grid = beatDur / 2; // 8th note
+    var sorted = phrase.slice().sort(function(a,b){return a.t-b.t;});
+    var result = [];
+    sorted.forEach(function(n) {
+      var tQ   = Math.round(n.t / grid) * grid;
+      var durQ = Math.max(grid * 0.5, Math.round(n.dur / grid) * grid);
+      if (result.length && Math.abs(tQ - result[result.length-1].t) < grid * 0.1) return; // deduplicate
+      result.push({midi:n.midi, t:tQ, dur:durQ});
+    });
+    return result;
+  }
+
+  function _freePhrase(scale, anchor, targetBeats, beatDur) {
+    var sorted = scale.slice().sort(function(a,b){return a-b;});
+    var result = [], current = _snapToScale(anchor, sorted);
+    var totalSec = targetBeats * beatDur, beat = 0, half = totalSec / 2;
+    var ascending = true;
+    var lo = _chordRangeLo + 7, hi = _chordRangeHi;
+    while (beat < totalSec - 0.01) {
+      var r = Math.random();
+      var noteDur = r<0.40 ? beatDur : r<0.70 ? beatDur/2 : r<0.85 ? beatDur*1.5 : beatDur*2;
+      noteDur = Math.min(noteDur, totalSec - beat);
+      if (beat >= half) ascending = false;
+      // Walk with direction bias; near end converge to anchor
+      var steps;
+      if (totalSec - beat < beatDur * 2) {
+        var dist = _scaleDegDist(current, anchor, sorted);
+        steps = dist > 0 ? 1 : dist < 0 ? -1 : 0;
+      } else {
+        var mr = Math.random();
+        if (mr < 0.55) steps = ascending ? 1 : -1;
+        else if (mr < 0.75) steps = 0;
+        else if (mr < 0.88) steps = ascending ? 2 : -2;
+        else steps = ascending ? -1 : 1;
+      }
+      current = _scaleStep(current, sorted, steps);
+      while (current < lo) current += 12;
+      while (current > hi) current -= 12;
+      result.push({midi:current, beat:beat, dur:noteDur * 0.88});
+      beat += noteDur;
+    }
+    if (result.length) result[result.length-1].midi = _snapToScale(anchor, sorted);
+    return result;
+  }
+
+  function _imitatePhrase(input, scale, anchor, targetBeats, beatDur) {
+    var sorted = scale.slice().sort(function(a,b){return a-b;});
+    var shift = 2 + Math.floor(Math.random() * 3);
+    var current = _scaleStep(_snapToScale(anchor, sorted), sorted, shift);
+    var lo = _chordRangeLo + 7, hi = _chordRangeHi;
+    while (current < lo) current += 12; while (current > hi) current -= 12;
+    var inputSpan = (input[input.length-1].t + input[input.length-1].dur) || 1;
+    var stretch = (targetBeats * beatDur) / inputSpan;
+    var result = [];
+    // Use input onset times directly to preserve rhythm
+    for (var i = 0; i < input.length; i++) {
+      var beat = input[i].t * stretch;
+      var dur  = input[i].dur * stretch;
+      result.push({midi:current, beat:beat, dur:dur * 0.88});
+      if (i + 1 < input.length) {
+        var steps = _scaleDegDist(input[i].midi, input[i+1].midi, sorted);
+        steps = Math.max(-4, Math.min(4, steps));
+        current = _scaleStep(current, sorted, steps);
+        while (current < lo) current += 12; while (current > hi) current -= 12;
+      }
+    }
+    return result;
+  }
+
+  function _answerPhrase(input, scale, anchor, targetBeats, beatDur) {
+    var sorted = scale.slice().sort(function(a,b){return a-b;});
+    var current = _snapToScale(input[input.length-1].midi, sorted);
+    var lo = _chordRangeLo + 7, hi = _chordRangeHi;
+    while (current < lo) current += 12; while (current > hi) current -= 12;
+    var inputSpan = (input[input.length-1].t + input[input.length-1].dur) || 1;
+    var stretch = (targetBeats * beatDur) / inputSpan;
+    var result = [];
+    for (var i = 0; i < input.length; i++) {
+      var beat = input[i].t * stretch;  // onset time preserved
+      var dur  = input[i].dur * stretch;
+      result.push({midi:current, beat:beat, dur:dur * 0.88});
+      var stepsToTonic = _scaleDegDist(current, anchor, sorted);
+      var move;
+      if (i >= input.length - 2) {
+        move = stepsToTonic > 0 ? Math.min(stepsToTonic,1) : stepsToTonic < 0 ? Math.max(stepsToTonic,-1) : 0;
+      } else {
+        var dir = stepsToTonic > 0 ? 1 : -1;
+        move = Math.random() < 0.65 ? dir : (Math.random() < 0.5 ? dir*2 : 0);
+      }
+      current = _scaleStep(current, sorted, move);
+      while (current < lo) current += 12; while (current > hi) current -= 12;
+    }
+    if (result.length) result[result.length-1].midi = _snapToScale(anchor, sorted);
+    return result;
+  }
+
+  function _generateMelody(input, scalePCs, targetBeats, style) {
+    if (!scalePCs.length) scalePCs = [0,2,4,5,7,9,11];
+    var scale = scalePCs.slice().sort(function(a,b){return a-b;});
+    var lp = _readLiveParams(), beatDur = lp.beatDur;
+    var mid = _chordRangeLo + Math.floor((_chordRangeHi - _chordRangeLo) * 0.55);
+    var anchor = _snapToScale(mid, scale);
+    while (anchor < _chordRangeLo + 7) anchor += 12;
+    while (anchor > _chordRangeHi)     anchor -= 12;
+    // Always quantize captured input to beat grid before using it
+    var q = input.length ? _quantizePhrase(input, beatDur) : [];
+    if (q.length >= 2) {
+      if (style === 'imitate') return _imitatePhrase(q, scale, anchor, targetBeats, beatDur);
+      if (style === 'answer')  return _answerPhrase(q, scale, anchor, targetBeats, beatDur);
+    }
+    return _freePhrase(scale, anchor, targetBeats, beatDur);
+  }
+
   // ── Markov chord transitions ────────────────────────────────────────────────
 
   function _chordFn(label) {
@@ -3762,6 +3941,8 @@ _TOOLTIP_JS = """
     if (_accompTimer) { clearTimeout(_accompTimer); _accompTimer = null; }
     _stopMidiClock();
     var d = document.getElementById('accomp-now-playing'); if (d) d.textContent = '—';
+    // Silence any pre-scheduled melody notes immediately
+    if (_melodyGain && _audioCtx) _melodyGain.gain.setTargetAtTime(0, _audioCtx.currentTime, 0.04);
   };
 
   // ── MIDI output — stream to DAW (Logic Pro via IAC driver) ──────────────────
@@ -3921,8 +4102,31 @@ _TOOLTIP_JS = """
     _pitchAnalyser.getFloatTimeDomainData(buf);
     var freq = _autocorrelate(buf, _audioCtx.sampleRate);
     if (freq > 60 && freq < 2000) {
-      var pc = Math.round(12*Math.log2(freq/440)+69) & 0xFF; pc = ((pc%12)+12)%12;
+      var midiRaw = Math.round(12 * Math.log2(freq / 440) + 69);
+      // 3-frame median smoothing — reduces pitch wobble / vibrato false-triggers
+      _micPitchHist.push(midiRaw); if (_micPitchHist.length > 3) _micPitchHist.shift();
+      var h = _micPitchHist.slice().sort(function(a,b){return a-b;});
+      var midiF = h[Math.floor(h.length/2)];
+      var pc = ((midiF % 12) + 12) % 12;
       _applyListenResponse([pc]);
+      // Phrase capture: new note when smoothed pitch shifts by ≥ 1 semitone
+      if (_phraseArmed || _phraseCapturing) {
+        if (midiF !== _micLastMidi) {
+          if (_micLastMidi >= 0 && _phraseCapturing) {
+            var d = now - _micLastT;
+            if (d >= 0.1) _capturedPhrase.push({midi:_micLastMidi, t:_micLastT, dur:d});
+          }
+          _micLastMidi = midiF; _micLastT = now;
+          if (_phraseArmed) { _phraseCapturing = true; _phraseArmed = false; _updateArmBtn(false); }
+          clearTimeout(_phraseGapTimer);
+        }
+      }
+    } else if (_phraseCapturing && _micLastMidi >= 0) {
+      // Silence detected — close the last note and start gap timer
+      var d = now - _micLastT;
+      if (d >= 0.1) _capturedPhrase.push({midi:_micLastMidi, t:_micLastT, dur:d});
+      _micLastMidi = -1;
+      _phraseGapTimer = setTimeout(_phraseComplete, PHRASE_GAP_SEC * 1000);
     }
     _pitchTimer = setTimeout(_pollPitch, 80);
   }
@@ -3959,6 +4163,86 @@ _TOOLTIP_JS = """
     if (mode === 'midi')  _initMIDI();
     if (mode === 'audio') _initAudioListen();
   };
+
+  window.armPhrase = function() {
+    _capturedPhrase = []; _phraseArmed = true; _phraseCapturing = false;
+    clearTimeout(_phraseGapTimer); _micLastMidi = -1;
+    _updateArmBtn(true);
+    _melStatus('Armed — play a phrase');
+  };
+
+  window.clearPhrase = function() {
+    _capturedPhrase = []; _phraseArmed = false; _phraseCapturing = false;
+    clearTimeout(_phraseGapTimer); _micLastMidi = -1;
+    _updateArmBtn(false); _melStatus('—');
+  };
+
+  function _restoreMelodyGain() {
+    if (!_melodyGain || !_audioCtx) return;
+    var el = document.getElementById('mix-melody');
+    var v = el ? parseFloat(el.value) : 0.6;
+    _melodyGain.gain.cancelScheduledValues(_audioCtx.currentTime);
+    _melodyGain.gain.setTargetAtTime(v, _audioCtx.currentTime, 0.01);
+  }
+
+  window.playCaptured = function() {
+    if (!_capturedPhrase.length) { _melStatus('Nothing captured — Arm first'); return; }
+    if (!_audioCtx) { var AC=window.AudioContext||window.webkitAudioContext; if(AC) _audioCtx=new AC(); }
+    if (_audioCtx.state==='suspended') _audioCtx.resume();
+    _ensureGainNodes(); _restoreMelodyGain();
+    var lp = _readLiveParams();
+    var q = _quantizePhrase(_capturedPhrase, lp.beatDur);
+    var now = _audioCtx.currentTime + 0.12;
+    q.forEach(function(n) { _playMelodyNote(n.midi, now + n.t, n.dur, 0.72); });
+    _melStatus('▶ Captured: ' + q.length + ' notes (quantized)');
+  };
+
+  window.generateMelodicResponse = function() {
+    var scalePCs = _getScalePCs();
+    if (!scalePCs.length) { _melStatus('Generate the palette first'); return; }
+    var style    = (document.getElementById('mel-style')||{}).value || 'answer';
+    var bars     = parseInt((document.getElementById('mel-bars')||{}).value || 2);
+    var lp       = _readLiveParams();
+    var notes    = _generateMelody(_capturedPhrase, scalePCs, bars * lp.bpb, style);
+    if (!notes.length) { _melStatus('Nothing generated'); return; }
+    if (!_audioCtx) { var AC=window.AudioContext||window.webkitAudioContext; if(AC) _audioCtx=new AC(); }
+    if (_audioCtx.state==='suspended') _audioCtx.resume();
+    _ensureGainNodes(); _restoreMelodyGain();
+    var now = _audioCtx.currentTime + 0.12;
+    notes.forEach(function(n) { _playMelodyNote(n.midi, now + n.beat, n.dur, 0.72); });
+    _melStatus('▶ ' + notes.length + ' notes · ' + bars + ' bar' + (bars>1?'s':''));
+  };
+
+  window.setRangeNote = function(track, which, midi) {
+    midi = parseInt(midi);
+    if (track === 'bass')  { if (which === 'lo') _bassRangeLo  = midi; else _bassRangeHi  = midi; }
+    else                   { if (which === 'lo') _chordRangeLo = midi; else _chordRangeHi = midi; }
+  };
+
+  function _buildNoteOptions(id, selected) {
+    var names = ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+    var sel = document.getElementById(id); if (!sel) return;
+    sel.innerHTML = '';
+    for (var m = 24; m <= 96; m++) {
+      var opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = names[m % 12] + (Math.floor(m / 12) - 1);
+      if (m === selected) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+
+  function _tryInitRangeSelectors(attempt) {
+    if (!document.getElementById('rng-bass-lo')) {
+      if (attempt < 25) setTimeout(function(){ _tryInitRangeSelectors(attempt + 1); }, 300);
+      return;
+    }
+    _buildNoteOptions('rng-bass-lo',  _bassRangeLo);
+    _buildNoteOptions('rng-bass-hi',  _bassRangeHi);
+    _buildNoteOptions('rng-chord-lo', _chordRangeLo);
+    _buildNoteOptions('rng-chord-hi', _chordRangeHi);
+  }
+  _tryInitRangeSelectors(0);
 
   initDelegation();
   _initMIDIOut();
@@ -6112,7 +6396,65 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
           <div id="listen-status" style="flex:1;font-family:'JetBrains Mono',monospace;color:var(--amber);font-size:11px;text-align:right;min-width:80px">—</div>
         </div>
       </div>
-    
+
+      <!-- Range -->
+      <div style="margin-top:11px;padding:11px 13px;background:#060c16;border:1px solid #122035;border-radius:8px">
+        <div style="color:#c8874a;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px">&#127929; Range</div>
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:44px;flex-shrink:0;font-size:11px;color:var(--mist)">Bass</div>
+            <select id="rng-bass-lo" onchange="window.setRangeNote&&window.setRangeNote('bass','lo',this.value)" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px"></select>
+            <span style="color:#c8874a;font-size:11px;flex-shrink:0">&#8211;</span>
+            <select id="rng-bass-hi" onchange="window.setRangeNote&&window.setRangeNote('bass','hi',this.value)" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px"></select>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:44px;flex-shrink:0;font-size:11px;color:var(--mist)">Chord</div>
+            <select id="rng-chord-lo" onchange="window.setRangeNote&&window.setRangeNote('chord','lo',this.value)" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px"></select>
+            <span style="color:#c8874a;font-size:11px;flex-shrink:0">&#8211;</span>
+            <select id="rng-chord-hi" onchange="window.setRangeNote&&window.setRangeNote('chord','hi',this.value)" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px"></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Melodic Response -->
+      <div style="margin-top:11px;padding:11px 13px;background:#060c16;border:1px solid #122035;border-radius:8px">
+        <div style="color:#c8874a;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px">&#127925; Melodic Response</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+          <button id="mel-arm-btn" onclick="window.armPhrase&&window.armPhrase()"
+            style="background:#1a3050;color:#8af7b8;border:1px solid #2a7040;border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer">&#128225; Arm</button>
+          <button onclick="window.playCaptured&&window.playCaptured()"
+            style="background:#0a1628;border:1px solid #2a4a6a;border-radius:5px;color:#c8c8d0;padding:4px 10px;font-size:12px;cursor:pointer">&#9654; Play</button>
+          <button onclick="window.generateMelodicResponse&&window.generateMelodicResponse()"
+            style="background:#0a1628;border:1px solid #2a4a6a;border-radius:5px;color:#c8c8d0;padding:4px 10px;font-size:12px;cursor:pointer">&#10022; Generate</button>
+          <button onclick="window.clearPhrase&&window.clearPhrase()"
+            style="background:#0a1628;border:1px solid #2a4a6a;border-radius:5px;color:#c8c8d0;padding:4px 10px;font-size:12px;cursor:pointer;opacity:.6">&#10005; Clear</button>
+          <div id="mel-status" style="flex:1;color:var(--amber);font-size:11px;font-style:italic">&#8212;</div>
+        </div>
+        <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+          <div>
+            <div style="font-size:10px;color:var(--mist);margin-bottom:3px">Style</div>
+            <select id="mel-style" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px;width:88px">
+              <option value="answer" selected>Answer</option>
+              <option value="imitate">Imitate</option>
+              <option value="free">Free</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--mist);margin-bottom:3px">Length</div>
+            <select id="mel-bars" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px;width:72px">
+              <option value="1">1 bar</option>
+              <option value="2" selected>2 bars</option>
+              <option value="4">4 bars</option>
+              <option value="8">8 bars</option>
+            </select>
+          </div>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding-bottom:2px;font-size:11px;color:var(--mist)">
+            <input type="checkbox" id="mel-auto-respond" style="cursor:pointer;accent-color:#c8874a">
+            Auto after phrase
+          </label>
+        </div>
+      </div>
+
     </div>
     </div></div>
     """)
