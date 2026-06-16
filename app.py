@@ -1309,26 +1309,68 @@ _TOOLTIP_JS = """
   var _audioCtx    = null;
   var _activeOscs  = [];
   var _masterGain  = null, _bassGain = null, _chordGain = null, _drumGain = null;
+  var _reverbNode  = null, _reverbSend = null;
+  var _melodyGain  = null;
   var _noiseBuffer = null;
 
+  function _makeReverb(ctx, decaySec, roomSize) {
+    // Synthetic impulse response: exponentially decaying stereo noise
+    var sr = ctx.sampleRate;
+    var len = Math.floor(sr * decaySec);
+    var ir = ctx.createBuffer(2, len, sr);
+    for (var ch = 0; ch < 2; ch++) {
+      var d = ir.getChannelData(ch);
+      for (var i = 0; i < len; i++) {
+        // Early reflections boost for first 30ms
+        var earlyBoost = i < sr * 0.03 ? 1.6 : 1.0;
+        d[i] = (Math.random() * 2 - 1) * earlyBoost * Math.pow(1 - i / len, roomSize);
+      }
+    }
+    var conv = ctx.createConvolver();
+    conv.buffer = ir;
+    return conv;
+  }
+
+  window._ensureGainNodes = function() { _ensureGainNodes(); };
   function _ensureGainNodes() {
     if (!_audioCtx || _masterGain) return;
+    window._audioCtx = _audioCtx;
     _masterGain = _audioCtx.createGain(); _masterGain.gain.value = 0.5;
+    window._masterGain = _masterGain;
     _bassGain   = _audioCtx.createGain(); _bassGain.gain.value   = 0.5;
     _chordGain  = _audioCtx.createGain(); _chordGain.gain.value  = 0.5;
     _drumGain   = _audioCtx.createGain(); _drumGain.gain.value   = 0.5;
+
+    // Room reverb: small send bus so instruments sit in a space, not a void
+    _reverbNode = _makeReverb(_audioCtx, 1.8, 2.2); // 1.8s decay, medium room
+    _reverbSend = _audioCtx.createGain(); _reverbSend.gain.value = 0.18; // wet level
+    var reverbOut = _audioCtx.createGain(); reverbOut.gain.value = 0.72;
+    _reverbNode.connect(reverbOut); reverbOut.connect(_masterGain);
+
+    _melodyGain = _audioCtx.createGain(); _melodyGain.gain.value = 0.0; // off by default
     _bassGain.connect(_masterGain);
     _chordGain.connect(_masterGain);
     _drumGain.connect(_masterGain);
+    _melodyGain.connect(_masterGain);
+    // Send each bus to reverb (bass gets less room — keeps it tight)
+    var bassRevSend = _audioCtx.createGain(); bassRevSend.gain.value = 0.45;
+    _bassGain.connect(bassRevSend); bassRevSend.connect(_reverbSend);
+    _chordGain.connect(_reverbSend);
+    _drumGain.connect(_reverbSend);
+    _melodyGain.connect(_reverbSend);
+    _reverbSend.connect(_reverbNode);
+
     _masterGain.connect(_audioCtx.destination);
     // Pre-bake noise buffer for drum synthesis (reused every bar)
     var sr = _audioCtx.sampleRate;
     _noiseBuffer = _audioCtx.createBuffer(1, Math.floor(sr * 0.5), sr);
     var nd = _noiseBuffer.getChannelData(0);
     for (var i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
-    // Sync all four sliders
+    // Sync slider positions to match initial gain values
+    var _initVols = {master:0.75, bass:1.0, chord:1.0, drum:1.0};
     ['master','bass','chord','drum'].forEach(function(t) {
-      var el = document.getElementById('mix-'+t); if (el) el.value = 0.5;
+      var el = document.getElementById('mix-'+t);
+      if (el) { el.value = _initVols[t]; var node = {master:_masterGain,bass:_bassGain,chord:_chordGain,drum:_drumGain}[t]; if(node) node.gain.value = _initVols[t]; }
     });
     _updateMixLabels();
   }
@@ -1442,7 +1484,7 @@ _TOOLTIP_JS = """
   function playChord(notes) {
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
-    if (!_audioCtx) _audioCtx = new AC();
+    if (!_audioCtx) { _audioCtx = new AC(); window._audioCtx = _audioCtx; }
     if (_audioCtx.state === 'suspended') _audioCtx.resume();
     _stopActive();
     var ctx = _audioCtx, now = ctx.currentTime;
@@ -1595,6 +1637,40 @@ _TOOLTIP_JS = """
   }
 
   window.setAccompDensity = function(track, value) { _density[track] = parseInt(value); };
+  window._setDens = function(track, value, btn) {
+    _density[track] = parseInt(value);
+    var row = btn.parentElement;
+    row.querySelectorAll('.dens-btn').forEach(function(b){ b.classList.remove('active'); });
+    btn.classList.add('active');
+  };
+
+  // Chord instrument override (empty string = use style default)
+  var _chordInstOverride = '';
+  window.setChordInstrument = function(v) { _chordInstOverride = v; };
+
+  // Melody track
+  var _melodyGain = null, _melodyInst = 'piano2', _melodyVol = 0;
+  window.setMelodyVolume = function(v) {
+    _melodyVol = parseFloat(v);
+    if (_melodyGain) _melodyGain.gain.value = _melodyVol;
+  };
+  window.setMelodyInstrument = function(v) { _melodyInst = v; };
+
+  // Reverb wet level
+  window.setReverbLevel = function(v) {
+    if (_reverbSend) _reverbSend.gain.value = parseFloat(v);
+  };
+  var _REVERB_PARAMS = { sm:[0.8,3.5], md:[1.8,2.2], lg:[3.5,1.6], pl:[1.2,4.5] };
+  window.setReverbRoom = function(v) {
+    if (!_audioCtx) return;
+    var p = _REVERB_PARAMS[v] || _REVERB_PARAMS.md;
+    var newRev = _makeReverb(_audioCtx, p[0], p[1]);
+    var reverbOut = _audioCtx.createGain(); reverbOut.gain.value = 0.72;
+    newRev.connect(reverbOut); reverbOut.connect(_masterGain);
+    if (_reverbSend) { _reverbSend.disconnect(); _reverbSend.connect(newRev); }
+    if (_reverbNode) { try { _reverbNode.disconnect(); } catch(e){} }
+    _reverbNode = newRev;
+  };
   window.setHumanize  = function(v) { _humanize  = Math.max(0, Math.min(1, parseFloat(v) || 0)); };
   window.setPassProb  = function(v) { _passProb  = Math.max(0, Math.min(1, parseFloat(v) || 0)); };
   window.setPassType  = function(v) { _passType  = v || 'sec_dom'; };
@@ -1725,54 +1801,74 @@ _TOOLTIP_JS = """
     });
   }
 
-  // Rhodes electric piano: FM bell-tone with tremolo
+  // Rhodes: FM bell-tone with key click, velocity brightness, pitch droop
   function _playRhodesNote(midiNote, t, dur, vel) {
-    var freq = 440 * Math.pow(2, (midiNote - 69) / 12);
-    var ctx = _audioCtx, dec = Math.min(dur, 3.2);
-    // FM modulator — bright transient that decays fast
+    // Each tine is slightly detuned — gives that warm, slightly imperfect character
+    var detuneCents = (Math.random() - 0.5) * 6;
+    var freq = 440 * Math.pow(2, (midiNote - 69 + detuneCents / 100) / 12);
+    var ctx = _audioCtx, dec = Math.min(dur, 3.5);
+    // Velocity scales both amplitude AND FM depth (harder = brighter bark)
+    var fmDepth = freq * (vel * 2.2 + 0.4);
+    // FM modulator
     var mod = ctx.createOscillator(), modEnv = ctx.createGain();
-    mod.type = 'sine'; mod.frequency.value = freq * 1.98; // near 2x for bell
-    modEnv.gain.setValueAtTime(freq * (vel * 1.4 + 0.6), t);
-    modEnv.gain.exponentialRampToValueAtTime(freq * 0.012, t + 0.18);
+    mod.type = 'sine'; mod.frequency.value = freq * 1.975;
+    modEnv.gain.setValueAtTime(fmDepth, t);
+    modEnv.gain.exponentialRampToValueAtTime(freq * 0.008, t + 0.22);
     mod.connect(modEnv);
-    // Carrier
+    // Carrier with slight pitch droop at onset (real tine behavior)
     var car = ctx.createOscillator(), carEnv = ctx.createGain();
-    car.type = 'sine'; car.frequency.value = freq;
+    car.type = 'sine';
+    car.frequency.setValueAtTime(freq * 1.006, t); // starts 6 cents sharp
+    car.frequency.exponentialRampToValueAtTime(freq, t + 0.04); // settles to pitch
     modEnv.connect(car.frequency);
     carEnv.gain.setValueAtTime(0, t);
-    carEnv.gain.linearRampToValueAtTime(vel * 0.88, t + 0.006);
-    carEnv.gain.exponentialRampToValueAtTime(vel * 0.45, t + 0.1);
+    carEnv.gain.linearRampToValueAtTime(vel * 0.90, t + 0.004);
+    carEnv.gain.exponentialRampToValueAtTime(vel * 0.48, t + 0.12);
     carEnv.gain.exponentialRampToValueAtTime(0.0001, t + dec);
-    // Tremolo LFO
+    // Tremolo LFO (deeper for harder hits)
     var lfo = ctx.createOscillator(), lfoG = ctx.createGain();
-    lfo.type = 'sine'; lfo.frequency.value = 5.0;
-    lfoG.gain.value = vel * 0.07;
+    lfo.type = 'sine'; lfo.frequency.value = 4.8 + vel * 0.6;
+    lfoG.gain.value = vel * 0.065;
     lfo.connect(lfoG); lfoG.connect(carEnv.gain);
-    // Subtle tone colour
-    var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3800;
+    // Key click: mechanical noise at note-on (very short, scaled by vel)
+    if (_noiseBuffer && vel > 0.3) {
+      var kc = ctx.createBufferSource(), kcG = ctx.createGain(), kcF = ctx.createBiquadFilter();
+      kc.buffer = _noiseBuffer; kcF.type = 'bandpass'; kcF.frequency.value = 1100; kcF.Q.value = 2.5;
+      kcG.gain.setValueAtTime(vel * 0.18, t); kcG.gain.exponentialRampToValueAtTime(0.0001, t + 0.009);
+      kc.connect(kcF); kcF.connect(kcG); kcG.connect(_chordGain); kc.start(t); kc.stop(t + 0.012);
+    }
+    var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3600 + vel * 1200;
     car.connect(carEnv); carEnv.connect(lp); lp.connect(_chordGain);
     [mod, car, lfo].forEach(function(o){ o.start(t); o.stop(t + dec + 0.1); });
   }
 
-  // Vibraphone: metallic sines with tremolo (spinning fan)
+  // Vibraphone: mallet thwack + metallic sines + spinning-fan tremolo
   function _playVibesNote(midiNote, t, dur, vel) {
     var freq = 440 * Math.pow(2, (midiNote - 69) / 12);
-    var ctx = _audioCtx, dec = Math.min(dur * 1.4 + 0.5, 4.5);
-    var master = ctx.createGain(); master.gain.setValueAtTime(1, t); master.connect(_chordGain);
-    // Tremolo
+    var ctx = _audioCtx, dec = Math.min(dur * 1.4 + 0.6, 5.0);
+    var master = ctx.createGain(); master.gain.setValueAtTime(vel * 0.88, t); master.connect(_chordGain);
+    // Tremolo (fan motor)
     var lfo = ctx.createOscillator(), lfoG = ctx.createGain();
-    lfo.type = 'sine'; lfo.frequency.value = 6.2; lfoG.gain.value = 0.10;
+    lfo.type = 'sine'; lfo.frequency.value = 6.0 + Math.random() * 0.4; lfoG.gain.value = 0.12;
     lfo.connect(lfoG); lfoG.connect(master.gain);
-    [[1, 0.80], [4, 0.10], [7, 0.04]].forEach(function(h) {
+    // Metallic partials: vibraphone has inharmonic partials at ~1×, 3.9×, 10.4×
+    [[1, 1.00], [3.92, 0.12], [10.4, 0.04]].forEach(function(h) {
       var osc = ctx.createOscillator(), g = ctx.createGain();
       osc.type = 'sine'; osc.frequency.value = freq * h[0];
       g.gain.setValueAtTime(0, t);
-      g.gain.linearRampToValueAtTime(vel * h[1], t + 0.003);
-      g.gain.exponentialRampToValueAtTime(vel * h[1] * 0.55, t + 0.05);
-      g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+      g.gain.linearRampToValueAtTime(h[1], t + 0.002);
+      g.gain.exponentialRampToValueAtTime(h[1] * 0.50, t + 0.06);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dec * (h[0] > 3 ? 0.4 : 1.0));
       osc.connect(g); g.connect(master);
       osc.start(t); osc.stop(t + dec + 0.1);
     });
+    // Mallet thwack: bright noise burst at onset (softens with softer velocity)
+    if (_noiseBuffer) {
+      var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
+      ns.buffer = _noiseBuffer; nf.type = 'bandpass'; nf.frequency.value = freq * 5; nf.Q.value = 2.0;
+      ng.gain.setValueAtTime(vel * 0.22, t); ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.008);
+      ns.connect(nf); nf.connect(ng); ng.connect(_chordGain); ns.start(t); ns.stop(t + 0.012);
+    }
     lfo.start(t); lfo.stop(t + dec + 0.1);
   }
 
@@ -1847,6 +1943,148 @@ _TOOLTIP_JS = """
     master.gain.setValueAtTime(0.85, t);
   }
 
+  // Hammond B3 organ: additive drawbar synthesis + Leslie tremolo
+  function _playOrganNote(midiNote, t, dur, vel) {
+    var freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+    var ctx = _audioCtx, dec = Math.min(dur + 0.04, 6.0);
+    var master = ctx.createGain(); master.gain.setValueAtTime(vel * 0.72, t);
+    master.gain.setValueAtTime(vel * 0.72, t + dec - 0.01);
+    master.gain.linearRampToValueAtTime(0.0001, t + dec); // hard stop = key-off click
+    // Leslie cabinet: dual LFO for rotary speaker (fast/slow modes)
+    var leslie = ctx.createOscillator(), leslieG = ctx.createGain();
+    leslie.type = 'sine'; leslie.frequency.value = 6.3; // fast rotor
+    leslieG.gain.value = vel * 0.055;
+    leslie.connect(leslieG); leslieG.connect(master.gain);
+    master.connect(_chordGain);
+    // Drawbar partials: 16', 8', 5⅓', 4', 3⅕', 2⅔', 2', 1⅗', 1'
+    var drawbars = [[0.5,0.6],[1,1.0],[1.5,0.5],[2,0.7],[2.5,0.3],[3,0.4],[4,0.3],[5,0.1],[8,0.06]];
+    drawbars.forEach(function(db) {
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'sine'; osc.frequency.value = freq * db[0];
+      osc.detune.value = (Math.random() - 0.5) * 2.5; // slight tuning drift
+      g.gain.value = db[1];
+      osc.connect(g); g.connect(master);
+      osc.start(t); osc.stop(t + dec + 0.05);
+    });
+    leslie.start(t); leslie.stop(t + dec + 0.05);
+  }
+
+  // Acoustic Piano: bright hammer strike + inharmonic string partials
+  function _playPianoNote2(midiNote, t, dur, vel) {
+    var freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+    var ctx = _audioCtx, dec = Math.min(dur * 1.1 + 0.5, 4.5);
+    var master = ctx.createGain(); master.connect(_chordGain);
+    master.gain.setValueAtTime(vel * 0.88, t);
+    // Hammer knock at attack
+    if (_noiseBuffer) {
+      var hn = ctx.createBufferSource(), hg = ctx.createGain(), hf = ctx.createBiquadFilter();
+      hn.buffer = _noiseBuffer; hf.type = 'bandpass';
+      hf.frequency.value = freq * 3.5 + 800; hf.Q.value = 1.8;
+      hg.gain.setValueAtTime(vel * 0.28, t); hg.gain.exponentialRampToValueAtTime(0.0001, t + 0.012);
+      hn.connect(hf); hf.connect(hg); hg.connect(master);
+      hn.start(t); hn.stop(t + 0.016);
+    }
+    // Inharmonic string partials (real piano strings are slightly sharp on overtones)
+    var inharmonic = 0.00015;
+    [[1,1.00],[2,0.50],[3,0.28],[4,0.16],[5,0.09],[6,0.05]].forEach(function(h, hi) {
+      var partialFreq = freq * h[0] * (1 + inharmonic * h[0] * h[0]);
+      var detune = (Math.random() - 0.5) * 4;
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'sine'; osc.frequency.value = partialFreq + detune;
+      var decScale = Math.pow(0.55, hi);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vel * h[1], t + 0.003);
+      g.gain.exponentialRampToValueAtTime(vel * h[1] * 0.25, t + 0.12);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dec * decScale + 0.3);
+      osc.connect(g); g.connect(master);
+      osc.start(t); osc.stop(t + dec + 0.1);
+    });
+  }
+
+  // Strings ensemble: detuned sawtooths, slow attack, lush pad
+  function _playStringsEnsemble(midiNote, t, dur, vel) {
+    var freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+    var ctx = _audioCtx, dec = Math.min(dur + 0.8, 6.0);
+    var attack = 0.18; // slow bow-like attack
+    var master = ctx.createGain(); master.connect(_chordGain);
+    var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200; lp.Q.value = 0.6;
+    lp.connect(master);
+    // 5 detuned saws per note — ensemble shimmer
+    var detunes = [-8, -3, 0, 3, 8];
+    detunes.forEach(function(d) {
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'sawtooth'; osc.frequency.value = freq; osc.detune.value = d;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vel * 0.18, t + attack);
+      g.gain.setValueAtTime(vel * 0.18, t + dec - 0.12);
+      g.gain.linearRampToValueAtTime(0.0001, t + dec);
+      osc.connect(g); g.connect(lp);
+      osc.start(t); osc.stop(t + dec + 0.05);
+    });
+    master.gain.value = 1.0;
+  }
+
+  // Clean electric guitar: warm pluck with chorus (think John Mayer, smooth jazz)
+  function _playCleanGuitar(midiNote, t, dur, vel) {
+    var freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+    var ctx = _audioCtx, dec = Math.min(dur * 0.9 + 0.2, 2.5);
+    var master = ctx.createGain(); master.connect(_chordGain);
+    // Chorus: two slightly detuned copies
+    [-5, 0, 5].forEach(function(detuneCents, vi) {
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = vi === 1 ? 'triangle' : 'sine';
+      osc.frequency.value = freq; osc.detune.value = detuneCents;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vel * (vi === 1 ? 0.55 : 0.22), t + 0.004);
+      g.gain.exponentialRampToValueAtTime(vel * (vi === 1 ? 0.18 : 0.07), t + 0.08);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+      osc.connect(g); g.connect(master);
+      osc.start(t); osc.stop(t + dec + 0.05);
+    });
+    // Pluck transient
+    if (_noiseBuffer) {
+      var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
+      ns.buffer = _noiseBuffer; nf.type = 'bandpass'; nf.frequency.value = freq * 3; nf.Q.value = 3;
+      ng.gain.setValueAtTime(vel * 0.15, t); ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.015);
+      ns.connect(nf); nf.connect(ng); ng.connect(master);
+      ns.start(t); ns.stop(t + 0.02);
+    }
+    // 2nd harmonic for warmth
+    var h2 = ctx.createOscillator(), h2g = ctx.createGain();
+    h2.type = 'sine'; h2.frequency.value = freq * 2;
+    h2g.gain.setValueAtTime(0, t);
+    h2g.gain.linearRampToValueAtTime(vel * 0.12, t + 0.003);
+    h2g.gain.exponentialRampToValueAtTime(0.0001, t + dec * 0.5);
+    h2.connect(h2g); h2g.connect(master);
+    h2.start(t); h2.stop(t + dec + 0.05);
+    master.gain.value = 0.82;
+  }
+
+  // Brass stab: punchy filtered sawtooth, fast attack/release
+  function _playBrassNote(midiNote, t, dur, vel) {
+    var freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+    var ctx = _audioCtx, dec = Math.min(dur, 0.45);
+    var master = ctx.createGain(); master.connect(_chordGain);
+    // Brass formant filter: sweeps from dark to bright on attack
+    var lp = ctx.createBiquadFilter(); lp.type = 'lowpass';
+    lp.frequency.setValueAtTime(freq * 1.5, t);
+    lp.frequency.exponentialRampToValueAtTime(freq * 6, t + 0.025);
+    lp.frequency.exponentialRampToValueAtTime(freq * 2.5, t + 0.09);
+    lp.Q.value = 2.8; lp.connect(master);
+    [[1,0.70,'sawtooth'],[2,0.35,'sawtooth'],[3,0.18,'sine'],[4,0.08,'sine']].forEach(function(h) {
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = h[2]; osc.frequency.value = freq * h[0];
+      osc.detune.value = (Math.random() - 0.5) * 8; // ensemble spread
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vel * h[1], t + 0.012);
+      g.gain.exponentialRampToValueAtTime(vel * h[1] * 0.55, t + 0.09);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+      osc.connect(g); g.connect(lp);
+      osc.start(t); osc.stop(t + dec + 0.05);
+    });
+    master.gain.value = 0.92;
+  }
+
   // ── Style → instrument routing ──────────────────────────────────────────────
   var _STYLE_INSTR = {
     'Ballad':        'strings',
@@ -1867,6 +2105,27 @@ _TOOLTIP_JS = """
     'Disco Pop':     'disco',
     'Brushed Trio':  'rhodes',
     'Jazz Shell':    'rhodes',
+    // New styles
+    'R&B':           'piano2',
+    'Neo Soul':      'rhodes',
+    'Gospel':        'organ',
+    'Soul':          'organ',
+    'Pop':           'piano2',
+    'Country':       'guitar',
+    'Reggae':        'organ',
+    'Latin':         'piano2',
+    'Funk':          'clav',
+    'Singer-Songwriter': 'acoustic',
+    'Indie Pop':     'piano2',
+    'Smooth Jazz':   'guitar_clean',
+    'Cinematic':     'strings_ens',
+    'Worship':       'organ',
+    'Tropical':      'vibes',
+    'Samba':         'guitar_bossa',
+    'Swing':         'vibes',
+    'Motown':        'organ',
+    'New Soul':      'strings_ens',
+    'Brass':         'brass',
   };
 
   var _INSTR_LABEL = {
@@ -1879,13 +2138,18 @@ _TOOLTIP_JS = """
     var pc = _NOTE_PC[note];
     var midi = (midiNote !== undefined) ? midiNote : (pc !== undefined ? 60 + pc : 60);
     if (pc !== undefined) _logNote(t, Math.min(dur, 4.0), midi, vel, 0);
-    var inst = _STYLE_INSTR[_accompState.style] || 'piano';
+    var inst = _chordInstOverride || _STYLE_INSTR[_accompState.style] || 'piano';
     if      (inst === 'strings')      _playStringsNote(note, t, dur, vel, midi);
+    else if (inst === 'strings_ens')  _playStringsEnsemble(midi, t, dur, vel);
     else if (inst === 'guitar')       _playGuitarNote(note, t, dur, vel, false, midi);
     else if (inst === 'guitar_bossa') _playGuitarNote(note, t, dur, vel, true,  midi);
+    else if (inst === 'guitar_clean') _playCleanGuitar(midi, t, dur, vel);
     else if (inst === 'pad')          _playPadNote(note, t, dur, vel, midi);
     else if (inst === 'honkyton')     _playHonkyTonkNote(note, t, dur, vel, midi);
     else if (inst === 'accordion')    _playAccordionNote(note, t, dur, vel, midi);
+    else if (inst === 'organ')        _playOrganNote(midi, t, dur, vel);
+    else if (inst === 'piano2')       _playPianoNote2(midi, t, dur, vel);
+    else if (inst === 'brass')        _playBrassNote(midi, t, dur, vel);
     else if (inst === 'rhodes')       _playRhodesNote(midi, t, dur, vel);
     else if (inst === 'vibes')        _playVibesNote(midi, t, dur, vel);
     else if (inst === 'clav')         _playClav(midi, t, dur, vel);
@@ -1896,7 +2160,8 @@ _TOOLTIP_JS = """
 
   function _sustainedStyle() {
     var inst = _STYLE_INSTR[_accompState.style] || 'piano';
-    return inst === 'strings' || inst === 'pad' || inst === 'accordion';
+    return inst === 'strings' || inst === 'strings_ens' || inst === 'pad' ||
+           inst === 'accordion' || inst === 'organ';
   }
 
   // ── MIDI recording ──────────────────────────────────────────────────────────
@@ -1940,24 +2205,37 @@ _TOOLTIP_JS = """
     _recordEvents.push({t:t-_recordStart+dur, type:'off', ch:9, note:note, vel:0});
   }
 
-  // ── Drum synthesis ───────────────────────────────────────────────────────────
+  // ── Drum synthesis — multi-layer, velocity-sensitive timbre ─────────────────
+
   function _playKick(t, vel) {
     _logDrumGM(t, 'kick', vel);
     var ctx = _audioCtx;
-    var osc = ctx.createOscillator(), g = ctx.createGain();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(160, t);
-    osc.frequency.exponentialRampToValueAtTime(45, t + 0.07);
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(vel * 0.95, t + 0.002);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
-    osc.connect(g); g.connect(_drumGain);
-    osc.start(t); osc.stop(t + 0.25);
-    if (_noiseBuffer) { // click transient
+    // Sub layer: deep sine with pitch sweep — the "thump"
+    var sub = ctx.createOscillator(), subG = ctx.createGain();
+    sub.type = 'sine';
+    var f0 = 52 + vel * 18;  // harder hit = slightly higher fundamental
+    sub.frequency.setValueAtTime(f0 * 3.2, t);
+    sub.frequency.exponentialRampToValueAtTime(f0, t + 0.055 + vel * 0.025);
+    subG.gain.setValueAtTime(0, t);
+    subG.gain.linearRampToValueAtTime(vel * 1.0, t + 0.002);
+    subG.gain.exponentialRampToValueAtTime(vel * 0.3, t + 0.08);
+    subG.gain.exponentialRampToValueAtTime(0.0001, t + 0.28 + vel * 0.08);
+    sub.connect(subG); subG.connect(_drumGain); sub.start(t); sub.stop(t + 0.40);
+    // Body layer: mid-range punch (adds thwack character on harder hits)
+    var body = ctx.createOscillator(), bodyG = ctx.createGain();
+    body.type = 'sine'; body.frequency.setValueAtTime(160 + vel * 40, t);
+    body.frequency.exponentialRampToValueAtTime(70, t + 0.04);
+    bodyG.gain.setValueAtTime(0, t);
+    bodyG.gain.linearRampToValueAtTime(vel * 0.50, t + 0.001);
+    bodyG.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
+    body.connect(bodyG); bodyG.connect(_drumGain); body.start(t); body.stop(t + 0.08);
+    // Click transient: beater impact — brighter on harder hits
+    if (_noiseBuffer) {
       var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
-      ns.buffer = _noiseBuffer; nf.type = 'lowpass'; nf.frequency.value = 180;
-      ng.gain.setValueAtTime(vel * 0.28, t); ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.018);
-      ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + 0.02);
+      ns.buffer = _noiseBuffer;
+      nf.type = 'bandpass'; nf.frequency.value = 120 + vel * 80; nf.Q.value = 0.6;
+      ng.gain.setValueAtTime(vel * 0.38, t); ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.012);
+      ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + 0.015);
     }
   }
 
@@ -1965,88 +2243,145 @@ _TOOLTIP_JS = """
     _logDrumGM(t, 'snare', vel);
     if (!_noiseBuffer) return;
     var ctx = _audioCtx;
-    var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
-    ns.buffer = _noiseBuffer; nf.type = 'bandpass'; nf.frequency.value = 1000; nf.Q.value = 0.9;
-    ng.gain.setValueAtTime(0, t);
-    ng.gain.linearRampToValueAtTime(vel * 0.85, t + 0.002);
-    ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.11);
-    ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + 0.14);
+    // Crack — high noise burst, filter opens wider on harder hits (brightness follows velocity)
+    var ns1 = ctx.createBufferSource(), ng1 = ctx.createGain(), nf1 = ctx.createBiquadFilter();
+    ns1.buffer = _noiseBuffer;
+    nf1.type = 'bandpass'; nf1.frequency.value = 800 + vel * 1400; nf1.Q.value = 0.7 + vel * 0.5;
+    ng1.gain.setValueAtTime(0, t);
+    ng1.gain.linearRampToValueAtTime(vel * 0.90, t + 0.001);
+    ng1.gain.exponentialRampToValueAtTime(0.0001, t + 0.06 + vel * 0.06);
+    ns1.connect(nf1); nf1.connect(ng1); ng1.connect(_drumGain); ns1.start(t); ns1.stop(t + 0.16);
+    // Wire buzz — longer tail, filtered separately
+    var ns2 = ctx.createBufferSource(), ng2 = ctx.createGain(), nf2 = ctx.createBiquadFilter();
+    ns2.buffer = _noiseBuffer;
+    nf2.type = 'highpass'; nf2.frequency.value = 3500;
+    ng2.gain.setValueAtTime(0, t + 0.004);
+    ng2.gain.linearRampToValueAtTime(vel * 0.30, t + 0.012);
+    ng2.gain.exponentialRampToValueAtTime(0.0001, t + 0.10 + vel * 0.05);
+    ns2.connect(nf2); nf2.connect(ng2); ng2.connect(_drumGain); ns2.start(t); ns2.stop(t + 0.18);
+    // Body resonance — pitch varies slightly per hit (no two snares sound identical)
+    var bodyF = 175 + Math.random() * 25;
     var osc = ctx.createOscillator(), og = ctx.createGain();
-    osc.type = 'triangle'; osc.frequency.value = 190;
-    og.gain.setValueAtTime(0, t); og.gain.linearRampToValueAtTime(vel * 0.35, t + 0.001);
-    og.gain.exponentialRampToValueAtTime(0.0001, t + 0.05);
-    osc.connect(og); og.connect(_drumGain); osc.start(t); osc.stop(t + 0.07);
+    osc.type = 'triangle'; osc.frequency.setValueAtTime(bodyF * 1.3, t);
+    osc.frequency.exponentialRampToValueAtTime(bodyF, t + 0.015);
+    og.gain.setValueAtTime(0, t); og.gain.linearRampToValueAtTime(vel * 0.42, t + 0.001);
+    og.gain.exponentialRampToValueAtTime(0.0001, t + 0.055 + vel * 0.02);
+    osc.connect(og); og.connect(_drumGain); osc.start(t); osc.stop(t + 0.10);
   }
 
   function _playGhost(t, vel) {
     _logDrumGM(t, 'ghost', vel * 0.28);
     if (!_noiseBuffer) return;
     var ctx = _audioCtx;
+    // Ghost: wire buzz only — no crack, no body. Very soft, high freq.
     var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
-    ns.buffer = _noiseBuffer; nf.type = 'bandpass'; nf.frequency.value = 900; nf.Q.value = 0.8;
-    ng.gain.setValueAtTime(0, t); ng.gain.linearRampToValueAtTime(vel * 0.20, t + 0.002);
-    ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
-    ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + 0.08);
+    ns.buffer = _noiseBuffer;
+    nf.type = 'bandpass'; nf.frequency.value = 2200 + Math.random() * 600; nf.Q.value = 1.1;
+    ng.gain.setValueAtTime(0, t); ng.gain.linearRampToValueAtTime(vel * 0.14, t + 0.001);
+    ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.045 + Math.random() * 0.02);
+    ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + 0.07);
   }
 
   function _playHihat(t, vel, open) {
     _logDrumGM(t, open ? 'hihat_open' : 'hihat', vel);
     if (!_noiseBuffer) return;
-    var ctx = _audioCtx, dur = open ? 0.20 : 0.038;
-    var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
-    ns.buffer = _noiseBuffer; nf.type = 'highpass'; nf.frequency.value = 6500;
-    ng.gain.setValueAtTime(0, t); ng.gain.linearRampToValueAtTime(vel * 0.55, t + 0.001);
-    ng.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + dur + 0.01);
+    var ctx = _audioCtx;
+    var dur = open ? (0.14 + vel * 0.12) : (0.018 + vel * 0.022);
+    // Multi-band metallic character: three filtered noise layers
+    [[7200, 0.8, 0.40], [10500, 0.5, 0.30], [4800, 1.4, 0.18]].forEach(function(band) {
+      var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
+      ns.buffer = _noiseBuffer;
+      nf.type = 'bandpass'; nf.frequency.value = band[0]; nf.Q.value = band[1];
+      ng.gain.setValueAtTime(0, t);
+      ng.gain.linearRampToValueAtTime(vel * band[2], t + 0.0008);
+      ng.gain.exponentialRampToValueAtTime(0.0001, t + dur * (open ? 1.0 : 0.9));
+      ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + dur + 0.01);
+    });
+    // "Chick" transient: very short click right at t=0
+    var tc = ctx.createBufferSource(), tg = ctx.createGain(), tf = ctx.createBiquadFilter();
+    tc.buffer = _noiseBuffer; tf.type = 'highpass'; tf.frequency.value = 9000;
+    tg.gain.setValueAtTime(vel * 0.55, t); tg.gain.exponentialRampToValueAtTime(0.0001, t + 0.006);
+    tc.connect(tf); tf.connect(tg); tg.connect(_drumGain); tc.start(t); tc.stop(t + 0.008);
   }
 
   function _playRide(t, vel) {
     _logDrumGM(t, 'ride', vel);
     if (!_noiseBuffer) return;
     var ctx = _audioCtx;
+    // Bell: pitched component at ~1000-1200 Hz — sine + slight harmonics
+    var bellFreq = 1020 + Math.random() * 60;
+    [[1, 0.28], [2.76, 0.10], [5.4, 0.04]].forEach(function(h) {
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'sine'; osc.frequency.value = bellFreq * h[0];
+      g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vel * h[1], t + 0.001);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + 0.35 + vel * 0.20);
+      osc.connect(g); g.connect(_drumGain); osc.start(t); osc.stop(t + 0.60);
+    });
+    // Wash: broadband shimmer after the bell
     var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
-    ns.buffer = _noiseBuffer; nf.type = 'bandpass'; nf.frequency.value = 3800; nf.Q.value = 0.5;
-    ng.gain.setValueAtTime(0, t); ng.gain.linearRampToValueAtTime(vel * 0.38, t + 0.003);
-    ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
-    ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + 0.20);
+    ns.buffer = _noiseBuffer; nf.type = 'bandpass'; nf.frequency.value = 5500; nf.Q.value = 0.4;
+    ng.gain.setValueAtTime(0, t + 0.003);
+    ng.gain.linearRampToValueAtTime(vel * 0.16, t + 0.018);
+    ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + 0.25);
   }
 
   function _playCrash(t, vel) {
     _logDrumGM(t, 'crash', vel);
     if (!_noiseBuffer) return;
     var ctx = _audioCtx;
-    var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
-    ns.buffer = _noiseBuffer; nf.type = 'highpass'; nf.frequency.value = 3500;
-    ng.gain.setValueAtTime(0, t); ng.gain.linearRampToValueAtTime(vel * 0.55, t + 0.003);
-    ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.75);
-    ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + 0.80);
+    // Crash: two noise layers — initial explosion + long wash
+    [[3800, 0.45, 0.008, 0.90], [6500, 0.38, 0.003, 0.55]].forEach(function(b) {
+      var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
+      ns.buffer = _noiseBuffer; nf.type = 'highpass'; nf.frequency.value = b[0];
+      ng.gain.setValueAtTime(0, t); ng.gain.linearRampToValueAtTime(vel * b[1], t + b[2]);
+      ng.gain.exponentialRampToValueAtTime(vel * b[1] * 0.25, t + 0.08);
+      ng.gain.exponentialRampToValueAtTime(0.0001, t + b[3] + vel * 0.4);
+      ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + 1.4);
+    });
+    // Bell shimmer at impact
+    var osc = ctx.createOscillator(), og = ctx.createGain();
+    osc.type = 'sine'; osc.frequency.value = 680 + Math.random() * 120;
+    og.gain.setValueAtTime(vel * 0.18, t); og.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+    osc.connect(og); og.connect(_drumGain); osc.start(t); osc.stop(t + 0.15);
   }
 
   function _playTom(t, vel, pitch) {
     var type = 'tom_' + pitch;
     _logDrumGM(t, type, vel);
-    var freqs = {hi:130, mid:100, lo:78};
-    var f0 = freqs[pitch] || 100;
+    var freqs = {hi:150, mid:105, lo:76};
+    var f0 = (freqs[pitch] || 105) + Math.random() * 6; // slight pitch variation per hit
     var ctx = _audioCtx;
+    // Sub sine: main tom body
     var osc = ctx.createOscillator(), g = ctx.createGain();
     osc.type = 'sine';
-    osc.frequency.setValueAtTime(f0 * 1.4, t);
-    osc.frequency.exponentialRampToValueAtTime(f0, t + 0.05);
-    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vel * 0.82, t + 0.003);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
-    osc.connect(g); g.connect(_drumGain); osc.start(t); osc.stop(t + 0.25);
+    osc.frequency.setValueAtTime(f0 * 1.6, t);
+    osc.frequency.exponentialRampToValueAtTime(f0, t + 0.04 + vel * 0.02);
+    g.gain.setValueAtTime(0, t); g.gain.linearRampToValueAtTime(vel * 0.88, t + 0.002);
+    g.gain.exponentialRampToValueAtTime(vel * 0.25, t + 0.08);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.28 + vel * 0.06);
+    osc.connect(g); g.connect(_drumGain); osc.start(t); osc.stop(t + 0.38);
+    // Attack transient: stick hit
+    if (_noiseBuffer) {
+      var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
+      ns.buffer = _noiseBuffer; nf.type = 'bandpass'; nf.frequency.value = f0 * 3; nf.Q.value = 1.2;
+      ng.gain.setValueAtTime(vel * 0.30, t); ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.018);
+      ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t); ns.stop(t + 0.022);
+    }
   }
 
   function _playClap(t, vel) {
     _logDrumGM(t, 'clap', vel);
     if (!_noiseBuffer) return;
     var ctx = _audioCtx;
-    [0, 0.01, 0.021].forEach(function(off) {
+    // Three staggered hand slaps + body resonance = real clap texture
+    [0, 0.008, 0.018, 0.030].forEach(function(off, i) {
       var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
-      ns.buffer = _noiseBuffer; nf.type = 'bandpass'; nf.frequency.value = 1200; nf.Q.value = 1.2;
-      ng.gain.setValueAtTime(0, t+off); ng.gain.linearRampToValueAtTime(vel * 0.45, t+off+0.002);
-      ng.gain.exponentialRampToValueAtTime(0.0001, t+off+0.05);
-      ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t+off); ns.stop(t+off+0.07);
+      ns.buffer = _noiseBuffer;
+      nf.type = 'bandpass'; nf.frequency.value = 900 + vel * 600; nf.Q.value = 1.0 + i * 0.3;
+      ng.gain.setValueAtTime(0, t+off); ng.gain.linearRampToValueAtTime(vel * (0.50 - i * 0.08), t+off+0.002);
+      ng.gain.exponentialRampToValueAtTime(0.0001, t+off + 0.04 + i * 0.01);
+      ns.connect(nf); nf.connect(ng); ng.connect(_drumGain); ns.start(t+off); ns.stop(t+off+0.06);
     });
   }
 
@@ -2249,27 +2584,39 @@ _TOOLTIP_JS = """
 
   function _playBassNote(note, t, dur) {
     var pc = _NOTE_PC[note]; if (pc === undefined) return;
-    _logNote(t, Math.min(dur, 2.2), 48 + pc, 0.9, 1);
-    var midi = 48 + pc;  // C3 range — upright bass register
+    // Hard-cap duration so notes don't bleed into each other at faster tempos
+    var d = Math.min(dur, 1.6);
+    _logNote(t, d, 48 + pc, 0.9, 1);
+    var midi = 48 + pc;
     var freq = 440 * Math.pow(2, (midi - 69) / 12);
     var ctx  = _audioCtx;
-    // Slight pitch glide from below (fretless character)
-    var glide = freq * 0.978;
-    var osc  = ctx.createOscillator(), g = ctx.createGain();
+    // Master gain — all layers go through this so they share the amplitude envelope
+    var master = ctx.createGain();
+    master.gain.setValueAtTime(0, t);
+    master.gain.linearRampToValueAtTime(0.92, t + 0.020);
+    master.gain.exponentialRampToValueAtTime(0.62, t + 0.18);
+    master.gain.exponentialRampToValueAtTime(0.0001, t + d);
+    master.connect(_bassGain);
+    // Fundamental: sine with fretless pitch slide from 2.5% below
+    var osc = ctx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(freq * 0.975, t);
+    osc.frequency.exponentialRampToValueAtTime(freq, t + 0.035);
+    osc.connect(master);
+    // 2nd harmonic: adds warmth, fades fast (like a plucked string)
     var osc2 = ctx.createOscillator(), g2 = ctx.createGain();
-    osc.type  = 'sine'; osc2.type = 'sine';
-    osc.frequency.setValueAtTime(glide, t);
-    osc.frequency.exponentialRampToValueAtTime(freq, t + 0.045); // slide in
-    osc2.frequency.value = freq * 2; g2.gain.value = 0.07;       // barely any 2nd harmonic
-    osc2.connect(g2); g2.connect(g);
-    // Slow attack, warm sustain
-    g.gain.setValueAtTime(0, t);
-    g.gain.linearRampToValueAtTime(0.9, t + 0.028);
-    g.gain.exponentialRampToValueAtTime(0.65, t + 0.18);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + Math.min(dur, 2.2));
-    osc.connect(g); g.connect(_bassGain);
-    osc.start(t); osc.stop(t + Math.min(dur, 2.3));
-    osc2.start(t); osc2.stop(t + Math.min(dur, 2.3));
+    osc2.type = 'sine'; osc2.frequency.value = freq * 2;
+    g2.gain.setValueAtTime(0.14, t);
+    g2.gain.exponentialRampToValueAtTime(0.0001, t + Math.min(d * 0.5, 0.5));
+    osc2.connect(g2); g2.connect(master);
+    // Pluck transient — short click, modest level
+    if (_noiseBuffer) {
+      var ns = ctx.createBufferSource(), ng2 = ctx.createGain(), nf = ctx.createBiquadFilter();
+      ns.buffer = _noiseBuffer; nf.type = 'bandpass'; nf.frequency.value = freq * 3.5; nf.Q.value = 2.5;
+      ng2.gain.setValueAtTime(0.22, t); ng2.gain.exponentialRampToValueAtTime(0.0001, t + 0.010);
+      ns.connect(nf); nf.connect(ng2); ng2.connect(_bassGain); ns.start(t); ns.stop(t + 0.013);
+    }
+    [osc, osc2].forEach(function(o){ o.start(t); o.stop(t + d + 0.04); });
   }
 
   // Walking bass: root + passing tones toward next chord root
@@ -2349,29 +2696,35 @@ _TOOLTIP_JS = """
 
   var _PATTERNS = {
     'Pad': function(bpb) { return [
-      {beat:0, type:'bass', d:1}, {beat:0, type:'chord', d:1}]; },
+      {beat:0, type:'bass',  vel:0.75, d:1},
+      {beat:0, type:'chord', vel:0.50, d:1},
+      {beat:2, type:'bass',  vel:0.62, d:2},
+      {beat:3, type:'bass',  vel:0.50, d:3}]; },
     'Blues': function(bpb) { return [
       {beat:0,   type:'bass',  vel:0.85, d:1},
       {beat:0.5, type:'chord', vel:0.55, d:2},
-      {beat:1,   type:'bass',  vel:0.70, d:2},
+      {beat:1,   type:'bass',  vel:0.70, d:3},
       {beat:1.5, type:'chord', vel:0.60, d:1},
-      {beat:2,   type:'bass',  vel:0.80, d:1},
+      {beat:2,   type:'bass',  vel:0.80, d:2},
       {beat:2.5, type:'chord', vel:0.50, d:2},
-      {beat:3,   type:'bass',  vel:0.70, d:2},
+      {beat:3,   type:'bass',  vel:0.70, d:3},
       {beat:3.5, type:'chord', vel:0.58, d:1}]; },
     'Honky Tonk': function(bpb) { return [
       {beat:0,   type:'bass',  vel:0.88, d:1},
       {beat:0.5, type:'chord', vel:0.68, d:1},
       {beat:1,   type:'chord', vel:0.55, d:2},
       {beat:1.5, type:'chord', vel:0.62, d:1},
-      {beat:2,   type:'bass',  vel:0.82, d:1},
+      {beat:1.5, type:'bass',  vel:0.68, d:3},
+      {beat:2,   type:'bass',  vel:0.82, d:2},
       {beat:2.5, type:'chord', vel:0.68, d:1},
       {beat:3,   type:'chord', vel:0.52, d:2},
+      {beat:3,   type:'bass',  vel:0.62, d:3},
       {beat:3.5, type:'chord', vel:0.62, d:1}]; },
     'Ballad': function(bpb) {
       if (bpb === 3) return [
-        {beat:0, type:'bass', vel:0.85, d:1},
+        {beat:0, type:'bass',  vel:0.85, d:1},
         {beat:1, type:'chord', vel:0.55, d:1},
+        {beat:2, type:'bass',  vel:0.65, d:3},
         {beat:2, type:'chord', vel:0.45, d:2}];
       return [
         {beat:0,   type:'bass',  vel:0.82, d:1},
@@ -2379,25 +2732,31 @@ _TOOLTIP_JS = """
         {beat:1.5, type:'chord', vel:0.52, d:1},
         {beat:2,   type:'bass',  vel:0.72, d:2},
         {beat:2.5, type:'chord', vel:0.42, d:2},
+        {beat:3,   type:'bass',  vel:0.60, d:3},
         {beat:3.5, type:'chord', vel:0.52, d:1}];
     },
     'Jazz': function(bpb) { return [
       {beat:0,   type:'bass',  vel:0.80, d:1},
       {beat:0.5, type:'chord', vel:0.48, d:2},
+      {beat:1,   type:'bass',  vel:0.65, d:3},
       {beat:1.5, type:'chord', vel:0.55, d:1},
-      {beat:2,   type:'bass',  vel:0.65, d:2},
+      {beat:2,   type:'bass',  vel:0.72, d:2},
       {beat:2.5, type:'chord', vel:0.50, d:2},
+      {beat:3,   type:'bass',  vel:0.60, d:3},
       {beat:3,   type:'chord', vel:0.42, d:3},
       {beat:3.5, type:'chord', vel:0.55, d:1}]; },
     'Waltz': function(bpb) { return [
       {beat:0, type:'bass',  vel:0.88, d:1},
       {beat:1, type:'chord', vel:0.52, d:1},
-      {beat:2, type:'chord', vel:0.42, d:1}]; },
+      {beat:1, type:'bass',  vel:0.60, d:2},
+      {beat:2, type:'chord', vel:0.42, d:1},
+      {beat:2, type:'bass',  vel:0.52, d:3}]; },
     'Bossa Nova': function(bpb) { return [
       {beat:0,   type:'bass',  vel:0.82, d:1},
       {beat:0.5, type:'chord', vel:0.48, d:2},
       {beat:1,   type:'chord', vel:0.42, d:3},
       {beat:1.5, type:'chord', vel:0.55, d:1},
+      {beat:2,   type:'bass',  vel:0.70, d:3},
       {beat:2.5, type:'bass',  vel:0.68, d:2},
       {beat:3,   type:'chord', vel:0.42, d:2},
       {beat:3.5, type:'chord', vel:0.55, d:1}]; },
@@ -2408,40 +2767,48 @@ _TOOLTIP_JS = """
       {beat:1.5, type:'chord', vel:0.42, d:2},
       {beat:2,   type:'bass',  vel:0.65, d:2},
       {beat:2.5, type:'chord', vel:0.38, d:3},
+      {beat:3,   type:'bass',  vel:0.55, d:3},
       {beat:3,   type:'chord', vel:0.58, d:1},
       {beat:3.5, type:'chord', vel:0.44, d:2}]; },
     'Rhodes Jazz': function(bpb) { return [
       {beat:0,   type:'bass',  vel:0.75, d:1},
       {beat:0.5, type:'chord', vel:0.44, d:2},
+      {beat:1,   type:'bass',  vel:0.60, d:3},
       {beat:1.5, type:'chord', vel:0.58, d:1},
-      {beat:2,   type:'bass',  vel:0.60, d:2},
+      {beat:2,   type:'bass',  vel:0.65, d:2},
       {beat:2.5, type:'chord', vel:0.40, d:3},
+      {beat:3,   type:'bass',  vel:0.55, d:3},
       {beat:3.5, type:'chord', vel:0.62, d:1}]; },
     // Vibraphone: sparse and open — lots of ring
     'Vibraphone': function(bpb) { return [
       {beat:0,   type:'bass',  vel:0.70, d:1},
       {beat:1,   type:'chord', vel:0.60, d:1},
+      {beat:2,   type:'bass',  vel:0.58, d:2},
       {beat:2.5, type:'chord', vel:0.50, d:1},
-      {beat:3,   type:'bass',  vel:0.55, d:2},
+      {beat:3,   type:'bass',  vel:0.50, d:3},
       {beat:3.5, type:'chord', vel:0.42, d:2}]; },
     // Funk Chop: tight 16th-note stabs, no sustain
     'Funk Chop': function(bpb) { return [
       {beat:0,    type:'bass',  vel:0.90, d:1},
       {beat:0.5,  type:'chord', vel:0.72, d:1},
       {beat:1,    type:'chord', vel:0.38, d:2},
+      {beat:1,    type:'bass',  vel:0.68, d:3},
       {beat:1.5,  type:'chord', vel:0.68, d:1},
-      {beat:2,    type:'bass',  vel:0.82, d:1},
+      {beat:2,    type:'bass',  vel:0.82, d:2},
       {beat:2.25, type:'chord', vel:0.30, d:3},
       {beat:2.5,  type:'chord', vel:0.65, d:1},
       {beat:3,    type:'chord', vel:0.36, d:2},
+      {beat:3,    type:'bass',  vel:0.60, d:3},
       {beat:3.5,  type:'chord', vel:0.70, d:1},
       {beat:3.75, type:'chord', vel:0.28, d:3}]; },
     // Lo-Fi: slow, spaced-out Rhodes hits with laid-back feel
     'Lo-Fi': function(bpb) { return [
       {beat:0,   type:'bass',  vel:0.72, d:1},
       {beat:0.5, type:'chord', vel:0.50, d:2},
+      {beat:1.5, type:'bass',  vel:0.55, d:3},
       {beat:2,   type:'bass',  vel:0.60, d:2},
       {beat:2.5, type:'chord', vel:0.62, d:1},
+      {beat:3,   type:'bass',  vel:0.48, d:3},
       {beat:3.5, type:'chord', vel:0.44, d:2}]; },
     // Acoustic: fingerpick pattern — bass on 1, plucked arpeggiated chord fills
     'Acoustic': function(bpb) { return [
@@ -2454,28 +2821,224 @@ _TOOLTIP_JS = """
       {beat:3,    type:'chord', vel:0.44, d:2},
       {beat:3.5,  type:'chord', vel:0.58, d:1}]; },
     // Disco Pop: four-on-the-floor bass, punchy off-beat chords
+    // d:1=sparse(beat 0 only), d:2=moderate(beat 0+2), d:3=dense(all four beats)
     'Disco Pop': function(bpb) { return [
       {beat:0,    type:'bass',  vel:0.90, d:1},
       {beat:0.5,  type:'chord', vel:0.70, d:1},
-      {beat:1,    type:'bass',  vel:0.80, d:1},
+      {beat:1,    type:'bass',  vel:0.80, d:3},
       {beat:1.5,  type:'chord', vel:0.62, d:1},
-      {beat:2,    type:'bass',  vel:0.88, d:1},
+      {beat:2,    type:'bass',  vel:0.88, d:2},
       {beat:2.5,  type:'chord', vel:0.72, d:1},
-      {beat:3,    type:'bass',  vel:0.78, d:1},
+      {beat:3,    type:'bass',  vel:0.78, d:3},
       {beat:3.5,  type:'chord', vel:0.68, d:1}]; },
     // Brushed Trio: sparse jazz feel, chord on 2+4 only, walking bass
     'Brushed Trio': function(bpb) { return [
       {beat:0,   type:'bass',  vel:0.72, d:1},
       {beat:1,   type:'chord', vel:0.50, d:1},
+      {beat:1,   type:'bass',  vel:0.58, d:3},
       {beat:2,   type:'bass',  vel:0.60, d:2},
-      {beat:3,   type:'chord', vel:0.55, d:1}]; },
+      {beat:3,   type:'chord', vel:0.55, d:1},
+      {beat:3,   type:'bass',  vel:0.52, d:3}]; },
     // Jazz Shell: very open comping — long spaces, shell voicings, comp on "and" beats
     'Jazz Shell': function(bpb) { return [
       {beat:0,    type:'bass',  vel:0.70, d:1},
       {beat:0.5,  type:'chord', vel:0.42, d:1},
       {beat:1.5,  type:'chord', vel:0.50, d:2},
+      {beat:2,    type:'bass',  vel:0.58, d:2},
       {beat:2.5,  type:'chord', vel:0.45, d:1},
+      {beat:3,    type:'bass',  vel:0.50, d:3},
       {beat:3.5,  type:'chord', vel:0.55, d:2}]; },
+    // R&B: chord on 2+4, 16th-note bass push, soulful
+    'R&B': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.88, d:1},
+      {beat:0.75, type:'chord', vel:0.62, d:2},
+      {beat:1,    type:'bass',  vel:0.72, d:3},
+      {beat:1.5,  type:'chord', vel:0.78, d:1},
+      {beat:2,    type:'bass',  vel:0.80, d:2},
+      {beat:2.75, type:'chord', vel:0.58, d:2},
+      {beat:3,    type:'bass',  vel:0.68, d:3},
+      {beat:3.5,  type:'chord', vel:0.82, d:1}]; },
+    // Neo Soul: complex syncopation, off-beat chords (D'Angelo, Frank Ocean feel)
+    'Neo Soul': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.82, d:1},
+      {beat:0.5,  type:'chord', vel:0.50, d:2},
+      {beat:0.75, type:'chord', vel:0.38, d:3},
+      {beat:1.5,  type:'bass',  vel:0.65, d:3},
+      {beat:1.75, type:'chord', vel:0.62, d:1},
+      {beat:2.25, type:'bass',  vel:0.72, d:2},
+      {beat:2.5,  type:'chord', vel:0.45, d:2},
+      {beat:3,    type:'bass',  vel:0.58, d:3},
+      {beat:3.25, type:'chord', vel:0.68, d:1},
+      {beat:3.75, type:'chord', vel:0.40, d:2}]; },
+    // Gospel: big chords on all beats, bass walking (Hezekiah Walker feel)
+    'Gospel': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.90, d:1},
+      {beat:0,    type:'chord', vel:0.82, d:1},
+      {beat:1,    type:'bass',  vel:0.75, d:2},
+      {beat:1,    type:'chord', vel:0.72, d:1},
+      {beat:2,    type:'bass',  vel:0.85, d:1},
+      {beat:2,    type:'chord', vel:0.78, d:1},
+      {beat:2.5,  type:'chord', vel:0.55, d:2},
+      {beat:3,    type:'bass',  vel:0.70, d:2},
+      {beat:3,    type:'chord', vel:0.68, d:1},
+      {beat:3.5,  type:'chord', vel:0.80, d:1}]; },
+    // Soul: Motown/Stax feel — bass push, chord on 2+4
+    'Soul': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.90, d:1},
+      {beat:0.5,  type:'chord', vel:0.48, d:3},
+      {beat:1,    type:'bass',  vel:0.68, d:3},
+      {beat:1.5,  type:'chord', vel:0.80, d:1},
+      {beat:2,    type:'bass',  vel:0.82, d:2},
+      {beat:2.5,  type:'chord', vel:0.50, d:3},
+      {beat:3,    type:'bass',  vel:0.65, d:3},
+      {beat:3.5,  type:'chord', vel:0.84, d:1}]; },
+    // Pop: simple 4-on-the-floor feel (Ed Sheeran, Taylor Swift)
+    'Pop': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.85, d:1},
+      {beat:0.5,  type:'chord', vel:0.60, d:2},
+      {beat:1,    type:'chord', vel:0.52, d:1},
+      {beat:1.5,  type:'chord', vel:0.48, d:2},
+      {beat:2,    type:'bass',  vel:0.80, d:2},
+      {beat:2.5,  type:'chord', vel:0.62, d:1},
+      {beat:3,    type:'chord', vel:0.50, d:2},
+      {beat:3,    type:'bass',  vel:0.62, d:3},
+      {beat:3.5,  type:'chord', vel:0.58, d:1}]; },
+    // Country: boom-chick pattern
+    'Country': function(bpb) { return [
+      {beat:0,   type:'bass',  vel:0.90, d:1},
+      {beat:1,   type:'chord', vel:0.70, d:1},
+      {beat:2,   type:'bass',  vel:0.82, d:2},
+      {beat:2.5, type:'bass',  vel:0.58, d:3},
+      {beat:3,   type:'chord', vel:0.68, d:1},
+      {beat:3.5, type:'chord', vel:0.42, d:2}]; },
+    // Reggae: skank on the off-beats (beats 2+4 and their "and"s)
+    'Reggae': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.88, d:1},
+      {beat:1,    type:'chord', vel:0.72, d:1},
+      {beat:1.5,  type:'chord', vel:0.45, d:2},
+      {beat:2,    type:'bass',  vel:0.70, d:2},
+      {beat:3,    type:'chord', vel:0.75, d:1},
+      {beat:3.5,  type:'chord', vel:0.42, d:2},
+      {beat:3.75, type:'bass',  vel:0.55, d:3}]; },
+    // Motown: punchy, bass-forward
+    'Motown': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.92, d:1},
+      {beat:0.75, type:'bass',  vel:0.60, d:3},
+      {beat:1,    type:'chord', vel:0.65, d:1},
+      {beat:1.5,  type:'bass',  vel:0.72, d:2},
+      {beat:2,    type:'bass',  vel:0.85, d:1},
+      {beat:2.75, type:'bass',  vel:0.58, d:3},
+      {beat:3,    type:'chord', vel:0.68, d:1},
+      {beat:3.5,  type:'bass',  vel:0.65, d:2}]; },
+    // Latin: clave feel (3-2 son clave)
+    'Latin': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.88, d:1},
+      {beat:0.5,  type:'chord', vel:0.55, d:2},
+      {beat:0.75, type:'chord', vel:0.42, d:3},
+      {beat:1.5,  type:'bass',  vel:0.70, d:2},
+      {beat:2,    type:'chord', vel:0.62, d:1},
+      {beat:2.5,  type:'bass',  vel:0.75, d:3},
+      {beat:3,    type:'chord', vel:0.50, d:2},
+      {beat:3.5,  type:'bass',  vel:0.60, d:2}]; },
+    // Singer-Songwriter: intimate fingerpick, very sparse
+    'Singer-Songwriter': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.80, d:1},
+      {beat:0.5,  type:'chord', vel:0.48, d:1},
+      {beat:1,    type:'chord', vel:0.38, d:2},
+      {beat:1.5,  type:'chord', vel:0.52, d:1},
+      {beat:2,    type:'bass',  vel:0.70, d:2},
+      {beat:2.5,  type:'chord', vel:0.44, d:1},
+      {beat:3,    type:'chord', vel:0.40, d:2},
+      {beat:3.5,  type:'chord', vel:0.56, d:1}]; },
+    // Smooth Jazz: laid-back comp, chord on 2 and 4
+    'Smooth Jazz': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.75, d:1},
+      {beat:0.5,  type:'chord', vel:0.40, d:2},
+      {beat:1.5,  type:'chord', vel:0.62, d:1},
+      {beat:2,    type:'bass',  vel:0.62, d:2},
+      {beat:2.5,  type:'chord', vel:0.38, d:2},
+      {beat:3,    type:'bass',  vel:0.52, d:3},
+      {beat:3.5,  type:'chord', vel:0.65, d:1}]; },
+    // Cinematic: slow, spacious strings
+    'Cinematic': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.78, d:1},
+      {beat:0,    type:'chord', vel:0.60, d:1},
+      {beat:2,    type:'bass',  vel:0.65, d:2},
+      {beat:2,    type:'chord', vel:0.50, d:2}]; },
+    // Worship: big sustained chords, simple bass
+    'Worship': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.85, d:1},
+      {beat:0,    type:'chord', vel:0.75, d:1},
+      {beat:2,    type:'bass',  vel:0.72, d:2},
+      {beat:2,    type:'chord', vel:0.65, d:2},
+      {beat:3.5,  type:'chord', vel:0.70, d:1}]; },
+    // Indie Pop: strummed feel with passing notes
+    'Indie Pop': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.82, d:1},
+      {beat:0.5,  type:'chord', vel:0.55, d:1},
+      {beat:1,    type:'chord', vel:0.48, d:2},
+      {beat:2,    type:'bass',  vel:0.75, d:2},
+      {beat:2.5,  type:'chord', vel:0.60, d:1},
+      {beat:3,    type:'bass',  vel:0.62, d:3},
+      {beat:3.5,  type:'chord', vel:0.52, d:1}]; },
+    // Funk: tight 16ths, syncopated
+    'Funk': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.92, d:1},
+      {beat:0.25, type:'chord', vel:0.35, d:3},
+      {beat:0.5,  type:'chord', vel:0.70, d:1},
+      {beat:1,    type:'bass',  vel:0.65, d:3},
+      {beat:1.5,  type:'chord', vel:0.72, d:2},
+      {beat:2,    type:'bass',  vel:0.88, d:2},
+      {beat:2.5,  type:'chord', vel:0.38, d:3},
+      {beat:3,    type:'bass',  vel:0.60, d:3},
+      {beat:3.5,  type:'chord', vel:0.75, d:1}]; },
+    // Tropical: marimba/vibes feel
+    'Tropical': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.80, d:1},
+      {beat:0.5,  type:'chord', vel:0.58, d:1},
+      {beat:1,    type:'chord', vel:0.45, d:2},
+      {beat:1.5,  type:'bass',  vel:0.60, d:3},
+      {beat:2,    type:'chord', vel:0.62, d:1},
+      {beat:2.5,  type:'chord', vel:0.50, d:2},
+      {beat:3,    type:'bass',  vel:0.72, d:2},
+      {beat:3.5,  type:'chord', vel:0.55, d:1}]; },
+    // Brass: punchy stabs, short hits
+    'Brass': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.90, d:1},
+      {beat:0.5,  type:'chord', vel:0.85, d:1},
+      {beat:1.5,  type:'chord', vel:0.72, d:2},
+      {beat:2,    type:'bass',  vel:0.82, d:2},
+      {beat:2.5,  type:'chord', vel:0.80, d:1},
+      {beat:3.5,  type:'chord', vel:0.68, d:2}]; },
+    // Samba: Brazilian bounce
+    'Samba': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.88, d:1},
+      {beat:0.5,  type:'chord', vel:0.52, d:2},
+      {beat:0.75, type:'chord', vel:0.40, d:3},
+      {beat:1.5,  type:'bass',  vel:0.72, d:2},
+      {beat:2,    type:'bass',  vel:0.80, d:1},
+      {beat:2.5,  type:'chord', vel:0.55, d:2},
+      {beat:3,    type:'chord', vel:0.42, d:3},
+      {beat:3.5,  type:'bass',  vel:0.65, d:3}]; },
+    // Swing: big band feel
+    'Swing': function(bpb) { return [
+      {beat:0,   type:'bass',  vel:0.85, d:1},
+      {beat:0.5, type:'chord', vel:0.55, d:2},
+      {beat:1,   type:'bass',  vel:0.65, d:3},
+      {beat:2,   type:'bass',  vel:0.80, d:1},
+      {beat:2.5, type:'chord', vel:0.60, d:2},
+      {beat:3,   type:'bass',  vel:0.60, d:3},
+      {beat:3,   type:'chord', vel:0.50, d:1},
+      {beat:3.5, type:'chord', vel:0.68, d:2}]; },
+    // New Soul: strings + bass, cinematic soul (like Lauryn Hill)
+    'New Soul': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.82, d:1},
+      {beat:0.5,  type:'chord', vel:0.55, d:2},
+      {beat:1.5,  type:'chord', vel:0.68, d:1},
+      {beat:2,    type:'bass',  vel:0.72, d:2},
+      {beat:2.5,  type:'chord', vel:0.48, d:2},
+      {beat:3,    type:'bass',  vel:0.60, d:3},
+      {beat:3.5,  type:'chord', vel:0.72, d:1}]; },
   };
 
   // ── Drum pattern library ─────────────────────────────────────────────────────
@@ -2758,8 +3321,10 @@ _TOOLTIP_JS = """
     // Swing amount: 1.0 = full triplet swing, 0 = straight
     var swingAmt = 0;
     if (st.style === 'Jazz' || st.style === 'Rhodes Jazz' || st.style === 'Brushed Trio' ||
-        st.style === 'Jazz Shell' || st.style === 'Blues') swingAmt = 0.88;
-    else if (st.style === 'Lo-Fi') swingAmt = 0.45; // gentle shuffle
+        st.style === 'Jazz Shell' || st.style === 'Blues' || st.style === 'Swing' ||
+        st.style === 'Smooth Jazz') swingAmt = 0.88;
+    else if (st.style === 'Lo-Fi' || st.style === 'Neo Soul' || st.style === 'R&B') swingAmt = 0.40;
+    else if (st.style === 'Gospel' || st.style === 'Soul' || st.style === 'Motown') swingAmt = 0.28;
 
     var nextChord = st.chords[(st.idx + 1) % st.chords.length];
     var walkingBass = (st.style === 'Rhodes Jazz' || st.style === 'Jazz' || st.style === 'Vibraphone' ||
@@ -2800,12 +3365,45 @@ _TOOLTIP_JS = """
         } else if (evt.type === 'bass' && bd >= evt.d && !walkingBass) {
           _playBassNote(root, t, Math.min(dur, st.beatDur * 1.9));
         }
+        if (evt.type === 'chord' && cd >= evt.d && _melodyVol > 0.01 && evt.beat % 2 === 0) {
+          // Melody: play top voiced note (melody voice) through separate lead instrument
+          var topMidi = voicedMidi[voicedMidi.length - 1] + 12; // up an octave for lead
+          var prevChordGain = _chordGain;
+          _chordGain = _melodyGain;
+          var melInst = _melodyInst || 'piano2';
+          if (melInst === 'piano2') _playPianoNote2(topMidi, t, Math.min(dur, st.beatDur * 1.5), v * 0.9);
+          else if (melInst === 'rhodes') _playRhodesNote(topMidi, t, Math.min(dur, st.beatDur * 1.5), v * 0.9);
+          else if (melInst === 'vibes') _playVibesNote(topMidi, t, Math.min(dur, st.beatDur * 1.8), v * 0.85);
+          else if (melInst === 'guitar_clean') _playCleanGuitar(topMidi, t, Math.min(dur, st.beatDur * 1.2), v * 0.9);
+          else if (melInst === 'strings_ens') _playStringsEnsemble(topMidi, t, Math.min(dur, st.beatDur * 2.0), v * 0.8);
+          else if (melInst === 'organ') _playOrganNote(topMidi, t, Math.min(dur, st.beatDur * 1.5), v * 0.85);
+          _chordGain = prevChordGain;
+        }
         if (evt.type === 'chord' && cd >= evt.d) {
+          // Style-aware strum width: acoustic/funk strums wide, piano rolls tight
+          var strumWidth = st.style === 'Acoustic'   ? 0.055 :
+                           st.style === 'Funk Chop'  ? 0.012 :
+                           st.style === 'Disco Pop'  ? 0.018 :
+                           (st.style === 'Jazz' || st.style === 'Rhodes Jazz' ||
+                            st.style === 'Jazz Shell' || st.style === 'Brushed Trio') ? 0.022 :
+                           st.style === 'Ballad'     ? 0.035 :
+                           0.028; // default piano/rhodes roll
+          var nNotes = notes.length;
           notes.forEach(function(n, ni) {
             if (ni === dropIdx) return;
-            var strumOffset = ni * (0.005 + Math.random() * (0.007 + _humanize * 0.010));
-            _playChordInst(n, t + strumOffset, Math.min(dur, barDur * 1.8),
-                           v * (0.82 + Math.random() * 0.22), voicedMidi[ni]);
+            // Strum: each note offset from bottom to top (adds physical realism)
+            var strumOffset = ni * (strumWidth / Math.max(nNotes - 1, 1))
+                              + (Math.random() - 0.5) * 0.004;
+            // Voice velocity: top note (melody) loudest, inner voices sit back
+            var voiceVelScale = (ni === nNotes - 1) ? 1.08   // top = melody, slightly forward
+                              : (ni === 0)           ? 0.88   // bottom inner voice
+                              : 0.78;                         // middle inner voices recede
+            // Duration jitter: inner voices release slightly early (pianist lifting fingers)
+            var durScale = 1.0 - (nNotes - 1 - ni) * 0.04 + (Math.random() - 0.5) * 0.08;
+            _playChordInst(n, t + strumOffset,
+                           Math.min(dur * Math.max(0.7, durScale), barDur * 1.8),
+                           v * voiceVelScale * (0.90 + Math.random() * 0.14),
+                           voicedMidi[ni]);
           });
         }
       });
@@ -2813,8 +3411,8 @@ _TOOLTIP_JS = """
 
     // ── Dynamic level: drifts slowly like a band breathing in and out ──────────
     _barCount++;
-    _dynamicLevel += (Math.random() - 0.48) * 0.06; // slight upward bias
-    _dynamicLevel = Math.max(0.68, Math.min(1.0, _dynamicLevel));
+    _dynamicLevel += (Math.random() - 0.48) * 0.09; // band breathes bar to bar
+    _dynamicLevel = Math.max(0.62, Math.min(1.0, _dynamicLevel));
     // Pull back every ~7-9 bars for 1-2 bars, then swell back
     if (_sparseBarsLeft > 0) {
       _dynamicLevel = Math.max(_dynamicLevel - 0.1, 0.55);
@@ -2911,6 +3509,16 @@ _TOOLTIP_JS = """
     'Ballad':       'Ballad',     'Pad':          'Ballad',
     'Lo-Fi':        'Ballad',     'Waltz':        'Ballad',
     'Rhodes':       'Rock Basic', 'Honky Tonk':   'Rock Basic',
+    'R&B':          'Funk Heavy', 'Neo Soul':     'Funk Light',
+    'Gospel':       'Rock Groove','Soul':         'Funk Heavy',
+    'Pop':          'Rock Basic', 'Country':      'Rock Basic',
+    'Reggae':       'Ballad',     'Motown':       'Funk Heavy',
+    'Latin':        'Bossa Nova', 'Singer-Songwriter': 'Acoustic',
+    'Smooth Jazz':  'Jazz Swing', 'Cinematic':    'Ballad',
+    'Worship':      'Ballad',     'Indie Pop':    'Rock Groove',
+    'Funk':         'Funk Heavy', 'Tropical':     'Bossa Nova',
+    'Brass':        'Funk Heavy', 'Samba':        'Bossa Nova',
+    'Swing':        'Jazz Swing', 'New Soul':     'Ballad',
   };
   var _drumUserOverride = false;
 
@@ -2922,7 +3530,7 @@ _TOOLTIP_JS = """
     // Auto-select drum pattern based on style (unless user has explicitly picked one)
     if (!_drumUserOverride && _STYLE_DEFAULT_DRUM[sty]) {
       _activeDrumPattern = _STYLE_DEFAULT_DRUM[sty];
-      var drumSel = document.querySelector('select.mix-density:last-of-type');
+      var drumSel = document.getElementById('drum-pattern-sel');
       if (drumSel && drumSel.value !== _activeDrumPattern) drumSel.value = _activeDrumPattern;
     }
     return { bpm:bpm, bpb:parseInt(ts.split('/')[0])||4, beatDur:60/bpm, style:sty, barsPerChord:Math.max(0.5, bpc) };
@@ -2992,15 +3600,59 @@ _TOOLTIP_JS = """
     _accompTimer = setTimeout(_accompTick, 25);
   }
 
+  // Build note list for a chord symbol from JS — maps symbol to MIDI pitch classes
+  function _chordNotesFromSym(sym) {
+    // Parse the symbol: root + quality suffix
+    var rootPat = /^([A-G][b#]?)/;
+    var m = sym.match(rootPat); if (!m) return [sym];
+    var root = m[1]; var qual = sym.slice(root.length);
+    var rootPc = _NOTE_PC2[root]; if (rootPc === undefined) return [sym];
+    var intervals;
+    if (qual==='')        intervals=[0,4,7];
+    else if (qual==='m') intervals=[0,3,7];
+    else if (qual==='dim') intervals=[0,3,6];
+    else if (qual==='aug') intervals=[0,4,8];
+    else if (qual==='maj7') intervals=[0,4,7,11];
+    else if (qual==='7')   intervals=[0,4,7,10];
+    else if (qual==='m7')  intervals=[0,3,7,10];
+    else if (qual==='m7b5') intervals=[0,3,6,10];
+    else if (qual==='dim7') intervals=[0,3,6,9];
+    else if (qual==='maj9') intervals=[0,4,7,11,14];
+    else if (qual==='m9')  intervals=[0,3,7,10,14];
+    else if (qual==='9')   intervals=[0,4,7,10,14];
+    else if (qual==='7#11') intervals=[0,4,7,10,18];
+    else if (qual==='sus4') intervals=[0,5,7];
+    else if (qual==='sus2') intervals=[0,2,7];
+    else intervals=[0,4,7];
+    var _CHROM2=['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+    return intervals.map(function(i){ return _CHROM2[(rootPc+i)%12]; });
+  }
+
   function _readAccompChords() {
-    var data = getChordData(); if (!Object.keys(data).length) return [];
+    // First check JS palette state (_seqOrder / _selectedChords) — these are authoritative
+    if (window._seqOrder && window._seqOrder.length > 0) {
+      return window._seqOrder.map(function(sym){
+        return {symbol:sym, label:sym, notes:_chordNotesFromSym(sym)};
+      });
+    }
+    if (window._selectedChords) {
+      var sel = Object.keys(window._selectedChords).filter(function(k){return window._selectedChords[k];});
+      if (sel.length > 0) {
+        return sel.map(function(sym){
+          return {symbol:sym, label:sym, notes:_chordNotesFromSym(sym)};
+        });
+      }
+    }
+    // Fallback: read from hidden Gradio CheckboxGroup
+    var data = getChordData();
     var result = [];
     document.querySelectorAll('#chord_picker label').forEach(function(label) {
       var inp = label.querySelector('input[type=checkbox]'), span = label.querySelector('span');
       if (!inp||!span) return;
       var text = span.textContent.trim(), parts = text.split('·');
       var sym = (parts.length>1 ? parts[parts.length-1] : parts[0]).trim();
-      if (data[sym]) result.push({symbol:sym, label:text, notes:data[sym].notes, checked:inp.checked});
+      var notes = (data[sym] && data[sym].notes) || _chordNotesFromSym(sym);
+      result.push({symbol:sym, label:text, notes:notes, checked:inp.checked});
     });
     var checked = result.filter(function(c){return c.checked;});
     return (checked.length>0 ? checked : result).map(function(c){
@@ -3043,16 +3695,54 @@ _TOOLTIP_JS = """
     }
   };
 
+  // Generate a default I-IV-V-I (or equivalent) when palette has no selection
+  function _autoChords() {
+    var root = (window._selRoot) || 'C';
+    var mode = (window._selMode) || 'Major (Ionian)';
+    var modeIntervals = {
+      'Major (Ionian)':[0,2,4,5,7,9,11],'Natural Minor (Aeolian)':[0,2,3,5,7,8,10],
+      'Dorian':[0,2,3,5,7,9,10],'Phrygian':[0,1,3,5,7,8,10],
+      'Lydian':[0,2,4,6,7,9,11],'Mixolydian':[0,2,4,5,7,9,10],
+      'Harmonic Minor':[0,2,3,5,7,8,11],'Melodic Minor':[0,2,3,5,7,9,11],
+      'Major Pentatonic':[0,2,4,7,9],'Minor Pentatonic':[0,3,5,7,10],
+      'Blues Scale':[0,3,5,6,7,10],
+    };
+    var ivs = modeIntervals[mode] || modeIntervals['Major (Ionian)'];
+    var _CHROM=['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+    var _NPC={C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11};
+    var rootPc = _NPC[root] || 0;
+    // Pick degrees 0,3,4,0 (I IV V I) from scale, or fewer for pentatonic
+    var degIdxs = ivs.length >= 5 ? [0, 3, 4, 0] : [0, 2, 3, 0];
+    var chords = [];
+    var seen = {};
+    degIdxs.forEach(function(di) {
+      if (di >= ivs.length) return;
+      var chordRootPc = (rootPc + ivs[di]) % 12;
+      var chordRoot = _CHROM[chordRootPc];
+      var avail = {};
+      ivs.forEach(function(s){ avail[(s - ivs[di] + 12) % 12] = true; });
+      var sym = avail[4] && avail[7] ? chordRoot : (avail[3] && avail[7] ? chordRoot+'m' : chordRoot);
+      var key = sym + di;
+      if (seen[key]) return; seen[key] = true;
+      chords.push({symbol:sym, label:sym, notes:_chordNotesFromSym(sym)});
+    });
+    return chords;
+  }
+
   window.startAccompaniment = function() {
     var AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) { alert('Web Audio not supported'); return; }
-    if (!_audioCtx) _audioCtx = new AC();
+    if (!_audioCtx) { _audioCtx = new AC(); window._audioCtx = _audioCtx; }
     if (_audioCtx.state === 'suspended') _audioCtx.resume();
     _stopActive(); _ensureGainNodes();
     var chords = _readAccompChords();
     if (!chords.length) {
+      // Auto-generate I-IV-V-I from current palette root/mode if nothing selected
+      chords = _autoChords();
+    }
+    if (!chords.length) {
       var d = document.getElementById('accomp-now-playing');
-      if (d) d.textContent = 'No chords — generate the palette first.'; return;
+      if (d) d.textContent = 'Select chords in the palette first.'; return;
     }
     _audioCtxStartMs = performance.now() - _audioCtx.currentTime * 1000;
     _clockDrift = 0; _driftTarget = 0;
@@ -3274,6 +3964,281 @@ _TOOLTIP_JS = """
   _initMIDIOut();
 })();
 
+/* ── Loop Pedal ── */
+(function(){
+  var _slots = {
+    A: {buf:null, src:null, muted:false, recorder:null, chunks:[], startTime:0, loopLen:0},
+    B: {buf:null, src:null, muted:false, recorder:null, chunks:[], startTime:0, loopLen:0},
+    C: {buf:null, src:null, muted:false, recorder:null, chunks:[], startTime:0, loopLen:0},
+  };
+  var _micStream = null;
+  var _loopDestNode = null; // capture band audio + mic into recorder
+  var _status = function(msg){ var el=document.getElementById('loop-status'); if(el) el.textContent=msg; };
+
+  function _getCtx() { return window._audioCtx || null; }
+
+  // Draw waveform on slot canvas
+  function _drawWave(slot, buf) {
+    var canvas = document.querySelector('#loop-slot-'+slot+' .loop-wave');
+    if (!canvas || !buf) return;
+    var ctx2 = canvas.getContext('2d');
+    var W=canvas.width, H=canvas.height;
+    ctx2.clearRect(0,0,W,H);
+    ctx2.strokeStyle='#5b9'; ctx2.lineWidth=1;
+    var data = buf.getChannelData(0);
+    var step = Math.max(1, Math.floor(data.length/W));
+    ctx2.beginPath();
+    for (var x=0;x<W;x++) {
+      var i=x*step, sum=0;
+      for(var j=0;j<step&&i+j<data.length;j++) sum+=Math.abs(data[i+j]);
+      var amp = (sum/step)*H*1.6;
+      ctx2.moveTo(x, H/2-amp/2);
+      ctx2.lineTo(x, H/2+amp/2);
+    }
+    ctx2.stroke();
+  }
+
+  function _slotClass(slot, cls) {
+    var el = document.getElementById('loop-slot-'+slot);
+    if (!el) return;
+    el.classList.remove('recording','looping','overdub','muted');
+    if (cls) el.classList.add(cls);
+  }
+
+  function _stopLoop(slot) {
+    var s = _slots[slot];
+    if (s.src) { try{s.src.stop();}catch(e){} s.src=null; }
+  }
+
+  function _startLoop(slot) {
+    var s = _slots[slot]; if (!s.buf) return;
+    var ctx = _getCtx(); if (!ctx) return;
+    _stopLoop(slot);
+    if (s.muted) return;
+    s.src = ctx.createBufferSource();
+    s.src.buffer = s.buf;
+    s.src.loop = true;
+    s.src.loopEnd = s.buf.duration;
+    // Route to master gain
+    if (window._masterGain) s.src.connect(window._masterGain);
+    else s.src.connect(ctx.destination);
+    s.src.start(0);
+    _slotClass(slot, 'looping');
+  }
+
+  function _mixBuffers(ctx, buf1, buf2) {
+    var len = Math.max(buf1.length, buf2.length);
+    var out = ctx.createBuffer(2, len, ctx.sampleRate);
+    for (var ch=0; ch<2; ch++) {
+      var d = out.getChannelData(ch);
+      var d1 = buf1.numberOfChannels > ch ? buf1.getChannelData(ch) : buf1.getChannelData(0);
+      var d2 = buf2.numberOfChannels > ch ? buf2.getChannelData(ch) : buf2.getChannelData(0);
+      for (var i=0;i<len;i++) d[i] = ((d1[i]||0)*0.72 + (d2[i]||0)*0.72);
+    }
+    return out;
+  }
+
+  function _getMicStream() {
+    return navigator.mediaDevices.getUserMedia({audio:{echoCancellation:false, noiseSuppression:false, autoGainControl:false}, video:false});
+  }
+
+  // Snap loop length to nearest bar if Sync to BPM is on
+  function _syncedLen(rawLen) {
+    var sync = document.getElementById('loop-sync-bpm');
+    if (!sync || !sync.checked) return rawLen;
+    var bpmEl = document.getElementById('ctrl-bpm');
+    var bpm = bpmEl ? parseFloat(bpmEl.value)||120 : 120;
+    var tsEl = document.getElementById('ctrl-timesig');
+    var bpb = tsEl ? parseInt((tsEl.value||'4/4').split('/')[0])||4 : 4;
+    var barLen = bpb * 60 / bpm;
+    var bars = Math.max(1, Math.round(rawLen / barLen));
+    return bars * barLen;
+  }
+
+  function _blobToAudioBuf(ctx, blob, cb) {
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      ctx.decodeAudioData(e.target.result, function(decoded) {
+        cb(null, decoded);
+      }, function(err){ cb(err); });
+    };
+    reader.readAsArrayBuffer(blob);
+  }
+
+  // Create a capture node: mic + band output → recorder input
+  // Returns {dest, cleanup} so caller can disconnect band after recording stops
+  function _buildCaptureStream(micStream, ctx) {
+    var dest = ctx.createMediaStreamDestination();
+    var inputMode = (document.getElementById('loop-input-sel')||{}).value || 'mix';
+    var bandConnected = false;
+    if (inputMode === 'mix' && window._masterGain) {
+      window._masterGain.connect(dest);
+      bandConnected = true;
+    }
+    if (micStream) {
+      var micSrc = ctx.createMediaStreamSource(micStream);
+      micSrc.connect(dest);
+    }
+    return {
+      dest: dest,
+      cleanup: function() {
+        if (bandConnected && window._masterGain) {
+          try { window._masterGain.disconnect(dest); } catch(e){}
+        }
+      }
+    };
+  }
+
+  function _finishRecording(slot, blob, isDub) {
+    var s = _slots[slot];
+    var ctx = _getCtx(); if (!ctx) return;
+    _blobToAudioBuf(ctx, blob, function(err, decoded) {
+      if (err) { _status('Decode error: '+err); return; }
+
+      // Trim/snap to sync
+      var targetLen = _syncedLen(decoded.duration);
+      var targetSamples = Math.round(targetLen * ctx.sampleRate);
+      var trimmed = ctx.createBuffer(decoded.numberOfChannels,
+        Math.min(targetSamples, decoded.length), ctx.sampleRate);
+      for (var ch=0;ch<decoded.numberOfChannels;ch++) {
+        trimmed.getChannelData(ch).set(decoded.getChannelData(ch).slice(0, trimmed.length));
+      }
+
+      if (isDub && s.buf) {
+        // Overdub: mix into existing loop (align to loop length)
+        var mixed = _mixBuffers(ctx, s.buf, trimmed);
+        s.buf = mixed;
+      } else {
+        s.buf = trimmed;
+      }
+      s.loopLen = s.buf.duration;
+
+      // Update time display
+      var timeEl = document.querySelector('#loop-slot-'+slot+' .loop-slot-time');
+      if (timeEl) timeEl.textContent = s.loopLen.toFixed(2)+'s';
+      _drawWave(slot, s.buf);
+      _startLoop(slot);
+      _status('Loop '+slot+' playing ('+s.loopLen.toFixed(2)+'s)');
+    });
+  }
+
+  function _startRecording(slot, isDub) {
+    var s = _slots[slot];
+    var ctx = _getCtx();
+    if (!ctx) {
+      var AC = window.AudioContext||window.webkitAudioContext;
+      if (AC) { window._audioCtx = new AC(); ctx = window._audioCtx; }
+      if (!ctx) { _status('No AudioContext'); return; }
+    }
+    if (ctx.state==='suspended') ctx.resume();
+    if (window._ensureGainNodes) window._ensureGainNodes();
+
+    _getMicStream().then(function(micStream) {
+      _micStream = micStream;
+      var capture = _buildCaptureStream(micStream, ctx);
+
+      var mimeType = ['audio/webm;codecs=opus','audio/webm','audio/ogg'].find(function(m){
+        return MediaRecorder.isTypeSupported(m);
+      }) || '';
+      var rec = new MediaRecorder(capture.dest.stream, mimeType ? {mimeType:mimeType} : {});
+      s.chunks = [];
+      s.recorder = rec;
+
+      rec.ondataavailable = function(e){ if(e.data.size>0) s.chunks.push(e.data); };
+      rec.onstop = function() {
+        capture.cleanup(); // disconnect band from capture node
+        var blob = new Blob(s.chunks, {type: mimeType || 'audio/webm'});
+        _slotClass(slot, '');
+        _finishRecording(slot, blob, isDub);
+        if (_micStream) { _micStream.getTracks().forEach(function(t){t.stop()}); _micStream=null; }
+        var btn = document.querySelector('#loop-slot-'+slot+' .loop-rec-btn');
+        if (btn) btn.classList.remove('active');
+      };
+
+      if (isDub) {
+        _stopLoop(slot); // briefly stop while overdubbing start, re-starts on finish
+        _slotClass(slot, 'overdub');
+        _status('Overdubbing '+slot+' — press ⊕ again to commit');
+      } else {
+        _slotClass(slot, 'recording');
+        _status('Recording '+slot+' — press ⏺ again to finish');
+      }
+
+      rec.start(100);
+
+      // Store stop callback on slot so second press can stop it
+      s._stop = function() { if(rec.state==='recording') rec.stop(); };
+    }).catch(function(e){ _status('Mic denied: '+e.message); });
+  }
+
+  // Toggle record on slot
+  window._loopRec = function(slot, btn) {
+    var s = _slots[slot];
+    if (s.recorder && s.recorder.state === 'recording') {
+      // Second press: stop recording
+      btn.classList.remove('active');
+      if (s._stop) s._stop();
+    } else {
+      // First press: stop any existing loop, start recording
+      _stopLoop(slot);
+      btn.classList.add('active');
+      _startRecording(slot, false);
+    }
+  };
+
+  window._loopDub = function(slot, btn) {
+    var s = _slots[slot];
+    if (!s.buf) { _status('Nothing to overdub on slot '+slot+' — record first'); return; }
+    if (s.recorder && s.recorder.state === 'recording') {
+      btn.classList.remove('active');
+      if (s._stop) s._stop();
+    } else {
+      btn.classList.add('active');
+      _startRecording(slot, true);
+    }
+  };
+
+  window._loopMute = function(slot, btn) {
+    var s = _slots[slot];
+    s.muted = !s.muted;
+    btn.classList.toggle('active', s.muted);
+    var el = document.getElementById('loop-slot-'+slot);
+    if (el) el.classList.toggle('muted', s.muted);
+    if (s.muted) { _stopLoop(slot); }
+    else if (s.buf) { _startLoop(slot); }
+  };
+
+  window._loopClear = function(slot) {
+    var s = _slots[slot];
+    _stopLoop(slot);
+    if (s.recorder && s.recorder.state==='recording') { try{s.recorder.stop();}catch(e){} }
+    s.buf = null; s.recorder = null; s.chunks = []; s.muted = false;
+    _slotClass(slot, '');
+    var timeEl = document.querySelector('#loop-slot-'+slot+' .loop-slot-time');
+    if (timeEl) timeEl.textContent = '—';
+    var canvas = document.querySelector('#loop-slot-'+slot+' .loop-wave');
+    if (canvas) { var c=canvas.getContext('2d'); c.clearRect(0,0,canvas.width,canvas.height); }
+    var btn = document.querySelector('#loop-slot-'+slot+' .loop-rec-btn');
+    if (btn) btn.classList.remove('active');
+    _status('Slot '+slot+' cleared');
+  };
+
+  window._loopStopAll = function() {
+    ['A','B','C'].forEach(function(s){ _stopLoop(s); _slotClass(s,''); });
+    _status('All loops stopped');
+  };
+
+  window._loopClearAll = function() {
+    ['A','B','C'].forEach(function(s){ window._loopClear(s); });
+    _status('All loops cleared');
+  };
+
+  // Expose restart for external sync
+  window._loopRestartAll = function() {
+    ['A','B','C'].forEach(function(s){ if(_slots[s].buf && !_slots[s].muted) _startLoop(s); });
+  };
+})();
+
 /* ── Custom palette picker ── */
 (function(){
   var NOTES = [
@@ -3285,11 +4250,74 @@ _TOOLTIP_JS = """
   var MODES_COMMON = [
     'Major (Ionian)','Natural Minor (Aeolian)','Dorian','Phrygian','Lydian',
     'Mixolydian','Locrian','Harmonic Minor','Melodic Minor',
-    'Major Pentatonic','Minor Pentatonic','Blues Scale'
+    'Major Pentatonic','Minor Pentatonic','Blues Scale','Whole Tone',
+    'Diminished (HW)','Hungarian Minor','Phrygian Dominant'
   ];
-  var _selRoot = 'C';
-  var _selMode = 'Major (Ionian)';
-  var _seqOrder = []; // ordered list of selected chord labels
+  // Mode intervals (semitones from root) — computed client-side, no Gradio roundtrip needed
+  var MODE_INTERVALS = {
+    'Major (Ionian)':         [0,2,4,5,7,9,11],
+    'Natural Minor (Aeolian)':[0,2,3,5,7,8,10],
+    'Dorian':                 [0,2,3,5,7,9,10],
+    'Phrygian':               [0,1,3,5,7,8,10],
+    'Lydian':                 [0,2,4,6,7,9,11],
+    'Mixolydian':             [0,2,4,5,7,9,10],
+    'Locrian':                [0,1,3,5,6,8,10],
+    'Harmonic Minor':         [0,2,3,5,7,8,11],
+    'Melodic Minor':          [0,2,3,5,7,9,11],
+    'Major Pentatonic':       [0,2,4,7,9],
+    'Minor Pentatonic':       [0,3,5,7,10],
+    'Blues Scale':            [0,3,5,6,7,10],
+    'Whole Tone':             [0,2,4,6,8,10],
+    'Diminished (HW)':        [0,2,3,5,6,8,9,11],
+    'Hungarian Minor':        [0,2,3,6,7,8,11],
+    'Phrygian Dominant':      [0,1,4,5,7,8,10],
+  };
+  var _CHROM = ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+  var _NOTE_PC2 = {C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11};
+  var _DEG_LABELS = ['I','II','III','IV','V','VI','VII','VIII'];
+
+  // Build all diatonic chords for a root + intervals array
+  function _buildScaleChords(rootNote, intervals) {
+    var rootPc = _NOTE_PC2[rootNote] || 0;
+    var chords = [];
+    intervals.forEach(function(semitone, degIdx) {
+      var chordRootPc = (rootPc + semitone) % 12;
+      var chordRootName = _CHROM[chordRootPc];
+      // Intervals available from this degree
+      var avail = {};
+      intervals.forEach(function(s) { avail[(s - semitone + 12) % 12] = true; });
+      var has = function(n){ return !!avail[n]; };
+      var m3=has(3),M3=has(4),p4=has(5),d5=has(6),p5=has(7),A5=has(8);
+      var M2=has(2),d7=has(9),m7=has(10),M7=has(11),A4=has(6);
+      var degBase = _DEG_LABELS[degIdx] || String(degIdx+1);
+      function addChord(sym, degSuffix, quality) {
+        chords.push({sym:chordRootName+sym, deg:degBase+degSuffix, quality:quality});
+      }
+      // Triads
+      if (M3&&p5)      addChord('',     '', 'major');
+      if (m3&&p5)      addChord('m',    '', 'minor');
+      if (m3&&d5&&!m7&&!d7) addChord('dim','°','dim');
+      if (M3&&A5)      addChord('aug',  '+','aug');
+      // 7ths
+      if (M3&&p5&&M7)  addChord('maj7','Δ','maj7');
+      if (M3&&p5&&m7)  addChord('7',   '⁷','dom7');
+      if (m3&&p5&&m7)  addChord('m7',  '⁷','min7');
+      if (m3&&d5&&m7)  addChord('m7b5','ø','hdim');
+      if (m3&&d5&&d7)  addChord('dim7','°⁷','dim7');
+      if (M3&&p5&&M7&&M2) addChord('maj9','⁹','maj9');
+      if (m3&&p5&&m7&&M2) addChord('m9', '⁹','min9');
+      if (M3&&p5&&m7&&M2) addChord('9',  '⁹','dom9');
+      if (M3&&p5&&m7&&A4) addChord('7#11','♯¹¹','lyd7');
+      if (p4&&p5&&!m3&&!M3) addChord('sus4','sus','sus');
+      if (M2&&p5&&!m3&&!M3) addChord('sus2','sus²','sus');
+    });
+    return chords;
+  }
+
+  var _selRoot = window._selRoot = 'C';
+  var _selMode = window._selMode = 'Major (Ionian)';
+  var _seqOrder = window._seqOrder = []; // ordered list of selected chord symbols
+  var _selectedChords = window._selectedChords = {}; // sym → true
 
   function _setGradioDropdown(elemId, value) {
     var wrap = document.getElementById(elemId) || document.querySelector('[id="'+elemId+'"]');
@@ -3319,11 +4347,11 @@ _TOOLTIP_JS = """
       b.className = 'pal-note' + (n.acc ? ' acc' : '') + (n.label === _selRoot ? ' on' : '');
       b.textContent = n.label;
       b.onclick = function() {
-        _selRoot = n.label;
+        _selRoot = window._selRoot = n.label;
         row.querySelectorAll('.pal-note').forEach(function(x){x.classList.remove('on');});
         b.classList.add('on');
-        _setGradioDropdown('palette_root', _selRoot);
-        setTimeout(_triggerGenerate, 80);
+        _selectedChords = window._selectedChords = {}; _seqOrder = window._seqOrder = [];
+        _rebuildTiles();
       };
       row.appendChild(b);
     });
@@ -3339,11 +4367,11 @@ _TOOLTIP_JS = """
       c.textContent = m.replace(' (Ionian)','').replace(' (Aeolian)','');
       c.title = m;
       c.onclick = function() {
-        _selMode = m;
+        _selMode = window._selMode = m;
         row.querySelectorAll('.pal-mode').forEach(function(x){x.classList.remove('on');});
         c.classList.add('on');
-        _setGradioDropdown('palette_mode', _selMode);
-        setTimeout(_triggerGenerate, 80);
+        _selectedChords = window._selectedChords = {}; _seqOrder = window._seqOrder = [];
+        _rebuildTiles();
       };
       row.appendChild(c);
     });
@@ -3366,71 +4394,65 @@ _TOOLTIP_JS = """
     };
   }
 
-  // ── Tile grid: mirrors chord_picker CheckboxGroup ─────────────────
-  // Map rough chord quality keywords to function class
-  function _fn(label) {
-    var l = label.toLowerCase();
-    if (/\bdim\b|°/.test(l)) return 'B';
-    if (/\baug\b/.test(l)) return 'B';
-    if (/min|m$|m7|m9/.test(l)) return 'P';
-    if (/dom|7$|9$|13$/.test(l)) return 'D';
-    return 'T';
-  }
-  function _qual(label) {
-    var l = label.toLowerCase();
-    if (/dim|°/.test(l)) return 'dim';
-    if (/aug/.test(l)) return 'aug';
-    if (/maj7|Δ/.test(l)) return 'maj7';
-    if (/m7/.test(l)) return 'min7';
-    if (/min|m$/.test(l)) return 'minor';
-    if (/7$/.test(l)) return 'dom7';
-    if (/9/.test(l)) return '9th';
-    if (/sus/.test(l)) return 'sus';
-    return 'major';
+  // ── Tile grid: JS-native, no Gradio roundtrip ─────────────────────
+  var _QUALITY_COLOR = {
+    major:'T', minor:'P', maj7:'T', min7:'P', dom7:'D', dom9:'D',
+    hdim:'B', dim:'B', dim7:'B', aug:'B', maj9:'T', min9:'P',
+    lyd7:'D', sus:'T'
+  };
+  function _qualLabel(q) {
+    return {major:'major',minor:'minor',maj7:'maj7',min7:'min7',dom7:'dom7',dom9:'9th',
+            hdim:'ø',dim:'dim',dim7:'dim7',aug:'aug',maj9:'maj9',min9:'min9',
+            lyd7:'lyd♭7',sus:'sus'}[q] || q;
   }
 
   function _rebuildTiles() {
-    var picker = document.querySelector('#chord_picker');
-    if (!picker) return;
-    var labels = picker.querySelectorAll('label');
     var grid = document.getElementById('pal-tile-grid');
     if (!grid) return;
+    var intervals = MODE_INTERVALS[_selMode] || MODE_INTERVALS['Major (Ionian)'];
+    var chords = _buildScaleChords(_selRoot, intervals);
     grid.innerHTML = '';
-    _seqOrder = _seqOrder.filter(function(s){
-      for (var i=0;i<labels.length;i++){
-        if (labels[i].querySelector('span') && labels[i].querySelector('span').textContent.trim().split('·')[0].trim() === s) return true;
-      }
-      return false;
-    });
-    labels.forEach(function(lbl) {
-      var inp = lbl.querySelector('input[type=checkbox]');
-      var span = lbl.querySelector('span');
-      if (!inp || !span) return;
-      var full = span.textContent.trim();
-      var parts = full.split('·');
-      var sym = parts[0].trim();
-      var deg = parts[1] ? parts[1].trim() : '';
-      var fn = _fn(sym);
+    // Remove chords from seqOrder that are no longer in scale
+    var syms = chords.map(function(c){return c.sym;});
+    _seqOrder = window._seqOrder = _seqOrder.filter(function(s){ return syms.indexOf(s) >= 0; });
+    chords.forEach(function(c) {
+      var isOn = !!_selectedChords[c.sym];
       var tile = document.createElement('div');
-      tile.className = 'pal-tile' + (inp.checked ? ' on' : '');
-      tile.dataset.fn = fn;
-      tile.dataset.sym = sym;
+      tile.className = 'pal-tile' + (isOn ? ' on' : '');
+      tile.dataset.fn = _QUALITY_COLOR[c.quality] || 'T';
+      tile.dataset.sym = c.sym;
       tile.innerHTML =
-        '<span class="pt-deg">'+deg+'</span>' +
-        '<span class="pt-sym">'+sym+'</span>' +
-        '<span class="pt-qual">'+_qual(sym)+'</span>';
+        '<span class="pt-deg">'+c.deg+'</span>' +
+        '<span class="pt-sym">'+c.sym+'</span>' +
+        '<span class="pt-qual">'+_qualLabel(c.quality)+'</span>';
       tile.onclick = function() {
-        inp.click();
-        var isOn = inp.checked;
-        tile.classList.toggle('on', isOn);
-        if (isOn) { if (_seqOrder.indexOf(sym)<0) _seqOrder.push(sym); }
-        else { _seqOrder = _seqOrder.filter(function(x){return x!==sym;}); }
+        var on = !_selectedChords[c.sym];
+        _selectedChords[c.sym] = on ? true : undefined;
+        tile.classList.toggle('on', on);
+        if (on) { if (_seqOrder.indexOf(c.sym)<0) _seqOrder.push(c.sym); }
+        else { _seqOrder = _seqOrder.filter(function(x){return x!==c.sym;}); }
         _rebuildSeq();
+        _syncGradioCheckboxes();
       };
-      if (inp.checked && _seqOrder.indexOf(sym) < 0) _seqOrder.push(sym);
       grid.appendChild(tile);
     });
     _rebuildSeq();
+  }
+
+  // Push current selection back to hidden Gradio CheckboxGroup so backend can use it
+  function _syncGradioCheckboxes() {
+    var picker = document.querySelector('#chord_picker');
+    if (!picker) return;
+    var selected = Object.keys(_selectedChords).filter(function(k){ return _selectedChords[k]; });
+    // Set checkboxes to match _selectedChords
+    picker.querySelectorAll('label').forEach(function(lbl) {
+      var inp = lbl.querySelector('input[type=checkbox]');
+      var span = lbl.querySelector('span');
+      if (!inp || !span) return;
+      var sym = span.textContent.trim().split('·')[0].trim();
+      var shouldBeChecked = !!_selectedChords[sym];
+      if (inp.checked !== shouldBeChecked) inp.click();
+    });
   }
 
   function _rebuildSeq() {
@@ -3447,9 +4469,7 @@ _TOOLTIP_JS = """
       x.onclick = function(e) {
         e.stopPropagation();
         _seqOrder.splice(i,1);
-        // uncheck the chord in picker
-        var lbl = _findLabel(sym);
-        if (lbl) { var inp=lbl.querySelector('input'); if(inp&&inp.checked) inp.click(); }
+        _selectedChords[sym] = undefined;
         _rebuildTiles();
       };
       pill.innerHTML = '<span>'+sym+'</span>';
@@ -3481,13 +4501,11 @@ _TOOLTIP_JS = """
     return found;
   }
 
-  // Watch chord_picker for changes (Gradio re-renders it on generate)
+  // Initial tile build — triggered once DOM is ready
   function _watchPicker() {
-    var picker = document.querySelector('#chord_picker');
-    if (!picker) { setTimeout(_watchPicker, 400); return; }
+    var grid = document.getElementById('pal-tile-grid');
+    if (!grid) { setTimeout(_watchPicker, 400); return; }
     _rebuildTiles();
-    var obs = new MutationObserver(function(){ _seqOrder=[]; _rebuildTiles(); });
-    obs.observe(picker, {childList:true, subtree:true});
   }
 
   function _init() {
@@ -4283,19 +5301,28 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   cursor: pointer;
 }
 .ac-sel option { background: #1e1e1e !important; color: var(--text) !important; }
-.mix-density {
+.dens-row {
+  display: flex;
+  gap: 2px;
+  margin-top: 4px;
   width: 100%;
-  background: var(--sunken) !important;
-  color: var(--text-dim) !important;
-  border: 1px solid var(--border-lo) !important;
-  border-radius: var(--radius-sm);
-  font-size: 9px;
-  font-family: var(--font-ui);
-  padding: 2px 4px;
-  cursor: pointer;
-  margin-top: 3px;
 }
-.mix-density option { background: #1e1e1e !important; }
+.dens-btn {
+  flex: 1;
+  background: var(--sunken);
+  color: var(--text-dim);
+  border: 1px solid var(--border-mid);
+  border-radius: 3px;
+  font-size: 8px;
+  font-family: var(--font-ui);
+  font-weight: 600;
+  padding: 3px 0;
+  cursor: pointer;
+  letter-spacing: 0.03em;
+  transition: background 0.1s, color 0.1s;
+}
+.dens-btn:hover { background: var(--panel); color: var(--text); }
+.dens-btn.active { background: #2a4a6b; color: #6db3f2; border-color: #4a7fb5; }
 
 /* Transport buttons — hardware style */
 .ac-btn {
@@ -4393,6 +5420,45 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 .mixer-strip .ac-lbl { font-size: 8px !important; margin-bottom: 5px; }
 
 /* Listen buttons */
+/* ── Loop Pedal ── */
+.loop-slot {
+  background: var(--sunken);
+  border: 1px solid var(--border-mid);
+  border-radius: 8px;
+  padding: 8px 10px;
+  min-width: 110px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transition: border-color 0.15s;
+}
+.loop-slot.recording { border-color: #e55; box-shadow: 0 0 8px rgba(220,60,60,0.4); }
+.loop-slot.looping   { border-color: #5b3; box-shadow: 0 0 8px rgba(80,200,60,0.3); }
+.loop-slot.overdub   { border-color: #f90; box-shadow: 0 0 8px rgba(255,150,0,0.4); }
+.loop-slot.muted     { opacity: 0.45; }
+.loop-slot-label { font-size: 18px; font-weight: 800; color: var(--text-bright); font-family: var(--font-ui); line-height:1; }
+.loop-slot-time  { font-size: 10px; font-family:'JetBrains Mono',monospace; color: var(--text-dim); }
+.loop-wave { display:block; background:rgba(255,255,255,0.03); border-radius:3px; }
+.loop-rec-btn, .loop-dub-btn, .loop-mute-btn, .loop-clear-btn {
+  flex:1; padding:3px 0; font-size:11px; border-radius:4px; cursor:pointer;
+  border:1px solid var(--border-mid); background:var(--panel); color:var(--text-dim);
+  font-family:var(--font-ui); transition: background 0.1s, color 0.1s;
+}
+.loop-rec-btn:hover   { background:#7b1515; color:#ff8080; border-color:#c33; }
+.loop-rec-btn.active  { background:#c0392b; color:#fff; border-color:#e55; animation: pulse-rec 0.8s infinite; }
+.loop-dub-btn.active  { background:#b07300; color:#ffe; border-color:#f90; }
+.loop-mute-btn.active { background:#445; color:#aac; }
+.loop-clear-btn:hover { background:#3a1515; color:#f88; }
+@keyframes pulse-rec { 0%,100%{opacity:1} 50%{opacity:0.65} }
+.loop-global-btn {
+  padding:4px 10px; font-size:9px; font-weight:700; letter-spacing:.05em;
+  font-family:var(--font-ui); text-transform:uppercase;
+  background:var(--sunken); color:var(--text-dim); border:1px solid var(--border-mid);
+  border-radius:4px; cursor:pointer; white-space:nowrap;
+}
+.loop-global-btn:hover { color:var(--text); border-color:var(--border-hi); }
+
 .lst-btn {
   background: var(--btn-face);
   color: var(--text-dim);
@@ -4755,23 +5821,36 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         <div style="flex:2;min-width:110px">
           <div class="ac-lbl">Style</div>
           <select id="ctrl-style" class="ac-sel">
-            <optgroup label="── Keys ──">
-              <option>Rhodes</option><option>Rhodes Jazz</option><option>Lo-Fi</option>
+            <optgroup label="── Piano / Keys ──">
+              <option>Pop</option><option>Ballad</option><option>Indie Pop</option>
+              <option>Singer-Songwriter</option><option>Rhodes</option><option>Lo-Fi</option>
               <option>Honky Tonk</option>
             </optgroup>
+            <optgroup label="── Soul / R&amp;B ──">
+              <option>R&amp;B</option><option>Neo Soul</option><option>Soul</option>
+              <option>Motown</option><option>Gospel</option><option>Worship</option>
+              <option>New Soul</option>
+            </optgroup>
             <optgroup label="── Jazz ──">
-              <option>Jazz</option><option>Jazz Shell</option><option>Brushed Trio</option>
-              <option>Vibraphone</option>
+              <option>Jazz</option><option>Smooth Jazz</option><option>Jazz Shell</option>
+              <option>Brushed Trio</option><option>Rhodes Jazz</option>
+              <option>Vibraphone</option><option>Swing</option>
             </optgroup>
-            <optgroup label="── Pop / Soul ──">
-              <option>Disco Pop</option><option>Funk Chop</option><option>Ballad</option>
-              <option>Acoustic</option>
+            <optgroup label="── Funk / Groove ──">
+              <option>Funk</option><option>Funk Chop</option><option>Disco Pop</option>
+              <option>Brass</option>
             </optgroup>
-            <optgroup label="── World ──">
-              <option>Bossa Nova</option><option>Blues</option><option>Waltz</option>
+            <optgroup label="── Guitar ──">
+              <option>Acoustic</option><option>Country</option>
             </optgroup>
-            <optgroup label="── Texture ──">
-              <option>Pad</option><option>Arpeggio Up</option><option>Arpeggio Down</option>
+            <optgroup label="── World / Latin ──">
+              <option>Bossa Nova</option><option>Samba</option><option>Latin</option>
+              <option>Reggae</option><option>Blues</option><option>Waltz</option>
+              <option>Tropical</option>
+            </optgroup>
+            <optgroup label="── Cinematic ──">
+              <option>Cinematic</option><option>Pad</option>
+              <option>Arpeggio Up</option><option>Arpeggio Down</option>
             </optgroup>
           </select>
         </div>
@@ -4838,71 +5917,121 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
       <!-- Mixer -->
       <div style="margin-bottom:12px">
         <div class="lc-section-title">🎚&nbsp; Mixer</div>
-        <div style="display:flex;gap:8px">
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
           <div class="mixer-strip">
             <div class="ac-lbl">Master</div>
-            <input id="mix-master" type="range" min="0" max="1.5" step="0.01" value="0.5" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-master" type="range" min="0" max="1.5" step="0.01" value="0.75" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('master',this.value);document.getElementById('mix-master-val').textContent=Math.round(this.value/1.5*100)+'%'">
-            <div id="mix-master-val" class="ac-val">33%</div>
+            <div id="mix-master-val" class="ac-val">50%</div>
           </div>
           <div class="mixer-strip">
             <div class="ac-lbl">Bass</div>
-            <input id="mix-bass" type="range" min="0" max="2" step="0.01" value="0.5" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-bass" type="range" min="0" max="2" step="0.01" value="1.0" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('bass',this.value);document.getElementById('mix-bass-val').textContent=Math.round(this.value/2*100)+'%'">
-            <div id="mix-bass-val" class="ac-val">25%</div>
-            <select class="mix-density" onchange="window.setAccompDensity&&window.setAccompDensity('bass',this.value)">
-              <option value="1">Sparse</option><option value="2" selected>Moderate</option>
-              <option value="3">Dense</option><option value="0">Off</option>
+            <div id="mix-bass-val" class="ac-val">50%</div>
+            <div class="dens-row" id="dens-bass">
+              <button class="dens-btn" data-v="0" onclick="window._setDens('bass',0,this)">Off</button>
+              <button class="dens-btn" data-v="1" onclick="window._setDens('bass',1,this)">Sparse</button>
+              <button class="dens-btn active" data-v="2" onclick="window._setDens('bass',2,this)">Mod</button>
+              <button class="dens-btn" data-v="3" onclick="window._setDens('bass',3,this)">Dense</button>
+            </div>
+          </div>
+          <div class="mixer-strip">
+            <div class="ac-lbl" id="mix-chord-label">Chords</div>
+            <input id="mix-chord" type="range" min="0" max="2" step="0.01" value="1.0" style="width:100%;accent-color:#c8874a;cursor:pointer"
+              oninput="window.setAccompVolume&&window.setAccompVolume('chord',this.value);document.getElementById('mix-chord-val').textContent=Math.round(this.value/2*100)+'%'">
+            <div id="mix-chord-val" class="ac-val">50%</div>
+            <div class="dens-row" id="dens-chord">
+              <button class="dens-btn" data-v="0" onclick="window._setDens('chord',0,this)">Off</button>
+              <button class="dens-btn" data-v="1" onclick="window._setDens('chord',1,this)">Sparse</button>
+              <button class="dens-btn active" data-v="2" onclick="window._setDens('chord',2,this)">Mod</button>
+              <button class="dens-btn" data-v="3" onclick="window._setDens('chord',3,this)">Dense</button>
+            </div>
+            <select class="mix-density" style="margin-top:4px" id="chord-inst-sel"
+              onchange="window.setChordInstrument&&window.setChordInstrument(this.value)">
+              <optgroup label="Keys">
+                <option value="">Auto (from Style)</option>
+                <option value="piano2">Acoustic Piano</option>
+                <option value="rhodes">Rhodes</option>
+                <option value="organ">Hammond Organ</option>
+                <option value="honkyton">Honky Tonk Piano</option>
+              </optgroup>
+              <optgroup label="Guitar &amp; Strings">
+                <option value="guitar">Jazz Guitar</option>
+                <option value="guitar_clean">Clean Electric</option>
+                <option value="guitar_bossa">Nylon Guitar</option>
+                <option value="acoustic">Acoustic Guitar</option>
+                <option value="strings">Strings</option>
+                <option value="strings_ens">String Ensemble</option>
+              </optgroup>
+              <optgroup label="Synth &amp; Misc">
+                <option value="vibes">Vibraphone</option>
+                <option value="clav">Clavinet</option>
+                <option value="pad">Synth Pad</option>
+                <option value="disco">Disco Synth</option>
+                <option value="brass">Brass</option>
+                <option value="accordion">Accordion</option>
+              </optgroup>
             </select>
           </div>
           <div class="mixer-strip">
-            <div class="ac-lbl" id="mix-chord-label">Piano</div>
-            <input id="mix-chord" type="range" min="0" max="2" step="0.01" value="0.5" style="width:100%;accent-color:#c8874a;cursor:pointer"
-              oninput="window.setAccompVolume&&window.setAccompVolume('chord',this.value);document.getElementById('mix-chord-val').textContent=Math.round(this.value/2*100)+'%'">
-            <div id="mix-chord-val" class="ac-val">25%</div>
-            <select class="mix-density" onchange="window.setAccompDensity&&window.setAccompDensity('chord',this.value)">
-              <option value="1">Sparse</option><option value="2" selected>Moderate</option>
-              <option value="3">Dense</option><option value="0">Off</option>
+            <div class="ac-lbl">Melody</div>
+            <input id="mix-melody" type="range" min="0" max="2" step="0.01" value="0.0" style="width:100%;accent-color:#a78bfa;cursor:pointer"
+              oninput="window.setMelodyVolume&&window.setMelodyVolume(this.value);document.getElementById('mix-melody-val').textContent=Math.round(this.value/2*100)+'%'">
+            <div id="mix-melody-val" class="ac-val">0%</div>
+            <select class="mix-density" style="margin-top:4px" id="melody-inst-sel"
+              onchange="window.setMelodyInstrument&&window.setMelodyInstrument(this.value)">
+              <option value="piano2">Piano Lead</option>
+              <option value="rhodes">Rhodes Lead</option>
+              <option value="vibes">Vibraphone</option>
+              <option value="guitar_clean">Clean Guitar</option>
+              <option value="strings_ens">Strings</option>
+              <option value="organ">Organ Lead</option>
+            </select>
+          </div>
+          <div class="mixer-strip">
+            <div class="ac-lbl">Reverb</div>
+            <input id="mix-reverb" type="range" min="0" max="1" step="0.01" value="0.18" style="width:100%;accent-color:#60a5fa;cursor:pointer"
+              oninput="window.setReverbLevel&&window.setReverbLevel(this.value);document.getElementById('mix-reverb-val').textContent=Math.round(this.value*100)+'%'">
+            <div id="mix-reverb-val" class="ac-val">18%</div>
+            <select class="mix-density" style="margin-top:4px"
+              onchange="window.setReverbRoom&&window.setReverbRoom(this.value)">
+              <option value="sm">Small Room</option>
+              <option value="md" selected>Medium Hall</option>
+              <option value="lg">Large Hall</option>
+              <option value="pl">Plate</option>
             </select>
           </div>
           <div class="mixer-strip">
             <div class="ac-lbl">Drums</div>
-            <input id="mix-drum" type="range" min="0" max="2" step="0.01" value="0.5" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-drum" type="range" min="0" max="2" step="0.01" value="1.0" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('drum',this.value);document.getElementById('mix-drum-val').textContent=Math.round(this.value/2*100)+'%'">
-            <div id="mix-drum-val" class="ac-val">25%</div>
-            <select class="mix-density" onchange="window.setAccompDensity&&window.setAccompDensity('drum',this.value)">
-              <option value="1" selected>Sparse</option><option value="2">Moderate</option>
-              <option value="3">Dense</option><option value="0">Off</option>
-            </select>
-            <select class="mix-density" style="margin-top:4px"
+            <div id="mix-drum-val" class="ac-val">50%</div>
+            <div class="dens-row" id="dens-drum">
+              <button class="dens-btn" data-v="0" onclick="window._setDens('drum',0,this)">Off</button>
+              <button class="dens-btn active" data-v="1" onclick="window._setDens('drum',1,this)">Sparse</button>
+              <button class="dens-btn" data-v="2" onclick="window._setDens('drum',2,this)">Mod</button>
+              <button class="dens-btn" data-v="3" onclick="window._setDens('drum',3,this)">Dense</button>
+            </div>
+            <select id="drum-pattern-sel" class="mix-density" style="margin-top:4px"
               onchange="window._drumUserOverride=true;window.setDrumPattern&&window.setDrumPattern(this.value)">
               <optgroup label="Soft"><option>Ballad</option></optgroup>
               <optgroup label="Rock">
-                <option selected>Rock Basic</option>
-                <option>Rock Groove</option>
-                <option>Rock Heavy</option>
+                <option selected>Rock Basic</option><option>Rock Groove</option><option>Rock Heavy</option>
               </optgroup>
               <optgroup label="Half-Time">
-                <option>Half-Time</option>
-                <option>Half-Time Heavy</option>
+                <option>Half-Time</option><option>Half-Time Heavy</option>
               </optgroup>
               <optgroup label="Funk">
-                <option>Funk Light</option>
-                <option>Funk Heavy</option>
+                <option>Funk Light</option><option>Funk Heavy</option>
               </optgroup>
               <optgroup label="Jazz / Latin">
-                <option>Jazz Swing</option>
-                <option>Brushed Trio</option>
-                <option>Jazz Shell</option>
-                <option>Bossa Nova</option>
+                <option>Jazz Swing</option><option>Brushed Trio</option>
+                <option>Jazz Shell</option><option>Bossa Nova</option>
               </optgroup>
-              <optgroup label="Pop">
-                <option>Disco Pop</option>
-                <option>Acoustic</option>
-              </optgroup>
-              <optgroup label="Groove">
-                <option>Double Time</option>
-                <option>Reggae</option>
+              <optgroup label="Pop / World">
+                <option>Disco Pop</option><option>Acoustic</option>
+                <option>Double Time</option><option>Reggae</option>
               </optgroup>
             </select>
           </div>
@@ -4911,7 +6040,63 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     
       <!-- Listen In -->
       <div style="background:var(--ink);border:1px solid var(--divider);border-radius:var(--radius-sm);padding:11px 14px">
-        <div class="lc-section-title">🎧&nbsp; Listen In</div>
+        <!-- ── Loop Pedal ── -->
+        <div class="lc-section-title" style="margin-top:14px">🔴&nbsp; Loop Pedal</div>
+        <div id="looper-wrap">
+          <div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;margin-bottom:8px">
+            <!-- Slots A B C -->
+            <div id="loop-slot-A" class="loop-slot" data-slot="A">
+              <div class="loop-slot-label">A</div>
+              <canvas class="loop-wave" width="90" height="28"></canvas>
+              <div class="loop-slot-time">—</div>
+              <div style="display:flex;gap:3px;margin-top:4px">
+                <button class="loop-rec-btn" onclick="window._loopRec('A',this)">⏺</button>
+                <button class="loop-dub-btn" onclick="window._loopDub('A',this)">⊕</button>
+                <button class="loop-mute-btn" onclick="window._loopMute('A',this)">M</button>
+                <button class="loop-clear-btn" onclick="window._loopClear('A')">✕</button>
+              </div>
+            </div>
+            <div id="loop-slot-B" class="loop-slot" data-slot="B">
+              <div class="loop-slot-label">B</div>
+              <canvas class="loop-wave" width="90" height="28"></canvas>
+              <div class="loop-slot-time">—</div>
+              <div style="display:flex;gap:3px;margin-top:4px">
+                <button class="loop-rec-btn" onclick="window._loopRec('B',this)">⏺</button>
+                <button class="loop-dub-btn" onclick="window._loopDub('B',this)">⊕</button>
+                <button class="loop-mute-btn" onclick="window._loopMute('B',this)">M</button>
+                <button class="loop-clear-btn" onclick="window._loopClear('B')">✕</button>
+              </div>
+            </div>
+            <div id="loop-slot-C" class="loop-slot" data-slot="C">
+              <div class="loop-slot-label">C</div>
+              <canvas class="loop-wave" width="90" height="28"></canvas>
+              <div class="loop-slot-time">—</div>
+              <div style="display:flex;gap:3px;margin-top:4px">
+                <button class="loop-rec-btn" onclick="window._loopRec('C',this)">⏺</button>
+                <button class="loop-dub-btn" onclick="window._loopDub('C',this)">⊕</button>
+                <button class="loop-mute-btn" onclick="window._loopMute('C',this)">M</button>
+                <button class="loop-clear-btn" onclick="window._loopClear('C')">✕</button>
+              </div>
+            </div>
+            <!-- Global controls -->
+            <div style="display:flex;flex-direction:column;gap:6px;justify-content:center;padding-left:6px;border-left:1px solid var(--border-mid)">
+              <button id="loop-stop-all" class="loop-global-btn" onclick="window._loopStopAll()">⏹ Stop all</button>
+              <button id="loop-clear-all" class="loop-global-btn" onclick="window._loopClearAll()">✕ Clear all</button>
+              <label style="display:flex;align-items:center;gap:5px;font-size:9px;color:var(--text-dim);cursor:pointer">
+                <input type="checkbox" id="loop-sync-bpm" style="accent-color:#5ba3f5"> Sync to BPM
+              </label>
+              <div style="font-size:9px;color:var(--text-dim)">Input:
+                <select id="loop-input-sel" class="mix-density" style="margin-top:2px;width:100%">
+                  <option value="mic">Mic</option>
+                  <option value="mix" selected>Mic + Band</option>
+                </select>
+              </div>
+            </div>
+          </div>
+          <div id="loop-status" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--amber);min-height:16px">Ready — press ⏺ on any slot to record</div>
+        </div>
+
+        <div class="lc-section-title" style="margin-top:14px">🎧&nbsp; Listen In</div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
           <div style="display:flex;gap:6px">
             <button id="listen-btn-off"   class="lst-btn active" onclick="window.startListening&&window.startListening('off')">Off</button>
