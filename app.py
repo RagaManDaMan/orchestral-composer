@@ -1359,21 +1359,71 @@ _TOOLTIP_JS = """
 
   // Spread chord tones across octaves for a natural piano voicing.
   // Root lands in C3-G3 range; inner voices build upward, each at least a minor 3rd above the previous.
-  function _voiceNotesToMidi(notes) {
+  // Style-aware chord voicing — adds 7ths/9ths for jazz/Rhodes styles,
+  // shell voicings (3rd+7th only) for 'Jazz Shell', close voicings for pop.
+  function _voiceNotesToMidi(notes, style) {
     var pcs = notes.map(function(n){ return _NOTE_PC[n] || 0; });
     if (!pcs.length) return [];
-    var root = 48 + ((pcs[0] + 12) % 12); // C3-B3
-    if (root > 55) root -= 12;             // cap root at G3 so chord doesn't sit too high
+
+    // For jazz/Rhodes styles, add a 7th above the top note if not already present
+    var jazzStyle = style === 'Jazz' || style === 'Rhodes Jazz' || style === 'Vibraphone' ||
+                    style === 'Brushed Trio' || style === 'Jazz Shell';
+    var pop9 = style === 'Ballad' || style === 'Pad' || style === 'Lo-Fi' ||
+               style === 'Acoustic' || style === 'Disco Pop';
+
+    // Root in C3-G3 range
+    var rootPc = pcs[0];
+    var root = 48 + ((rootPc + 12) % 12);
+    if (root > 55) root -= 12;
+
     var midi = [root];
     for (var i = 1; i < pcs.length; i++) {
       var pc = pcs[i], prev = midi[midi.length - 1];
       var semAbove = ((pc - (prev % 12)) + 12) % 12;
-      if (semAbove === 0) semAbove = 12;   // same pc → up an octave
+      if (semAbove === 0) semAbove = 12;
       var next = prev + semAbove;
-      if (semAbove < 3) next += 12;        // avoid minor-2nd clusters
+      if (semAbove < 3) next += 12;
       midi.push(next);
     }
+
+    // Jazz shell: drop middle notes, keep root + 3rd + 7th (more open)
+    if (jazzStyle && midi.length >= 3) {
+      var third = midi[1], seventh = midi[midi.length - 1];
+      // Add a 9th above the 7th for richness
+      var ninthPc = (rootPc + 2) % 12;
+      var ninthAbove = ((ninthPc - (seventh % 12)) + 12) % 12;
+      if (ninthAbove === 0) ninthAbove = 12;
+      var ninth = seventh + ninthAbove;
+      if (ninth - root > 24) ninth -= 12; // don't spread too wide
+      midi = [root, third, seventh, ninth];
+      // Keep it in a comfortable register — shift whole voicing up if too low
+      if (midi[midi.length-1] < 60) midi = midi.map(function(m){ return m+12; });
+    }
+
+    // Pop 9th: add a 9th colour on top for richness (add9 sound)
+    if (pop9 && midi.length >= 2) {
+      var top = midi[midi.length - 1];
+      var n9pc = (pcs[0] + 2) % 12;
+      var diff = ((n9pc - (top % 12)) + 12) % 12;
+      if (diff === 0) diff = 12;
+      var n9 = top + diff;
+      if (n9 - root <= 26) midi.push(n9);
+    }
+
     return midi;
+  }
+
+  // Swing offset: pushes "and" beats (beat + 0.5) to beat + 0.667 (triplet feel)
+  // Applies only to swing/jazz styles. amt 0=straight, 1=full triplet swing.
+  function _swingBeat(rawBeat, swingAmt) {
+    if (swingAmt <= 0) return rawBeat;
+    var floor = Math.floor(rawBeat);
+    var frac  = rawBeat - floor;
+    // Straight 8th "and" = 0.5 → swing to 0.667 (2/3 of a beat)
+    if (Math.abs(frac - 0.5) < 0.05) {
+      return floor + 0.5 + (0.167 * swingAmt);
+    }
+    return rawBeat;
   }
 
   function _stopActive() {
@@ -1744,6 +1794,59 @@ _TOOLTIP_JS = """
     });
   }
 
+  // Acoustic guitar: plucked Karplus-Strong-ish via bandpass noise + harmonic decay
+  function _playAcousticNote(midiNote, t, dur, vel) {
+    var freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+    var ctx = _audioCtx, dec = Math.min(dur * 1.1 + 0.3, 3.2);
+    var master = ctx.createGain(); master.connect(_chordGain);
+    // Body resonance: bandpass around string freq
+    var bp = ctx.createBiquadFilter(); bp.type = 'bandpass';
+    bp.frequency.value = freq; bp.Q.value = 18;
+    // Attack transient (pluck noise)
+    if (_noiseBuffer) {
+      var ns = ctx.createBufferSource(), ng = ctx.createGain();
+      ns.buffer = _noiseBuffer;
+      ng.gain.setValueAtTime(vel * 0.35, t);
+      ng.gain.exponentialRampToValueAtTime(0.0001, t + 0.025);
+      ns.connect(bp); bp.connect(ng); ng.connect(master);
+      ns.start(t); ns.stop(t + 0.03);
+    }
+    // Sustain: fundamental + 2nd + 3rd harmonics decaying naturally
+    [[1, 0.70, 1.8], [2, 0.18, 0.9], [3, 0.07, 0.5]].forEach(function(h) {
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = 'triangle'; osc.frequency.value = freq * h[0];
+      osc.detune.value = (Math.random() - 0.5) * 3;
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vel * h[1], t + 0.005);
+      g.gain.exponentialRampToValueAtTime(vel * h[1] * 0.3, t + h[2]);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+      osc.connect(g); g.connect(master);
+      osc.start(t); osc.stop(t + dec + 0.05);
+    });
+    master.gain.setValueAtTime(0.7, t);
+  }
+
+  // Disco/pop synth: punchy piano + synth layer with tight gate
+  function _playDiscoNote(midiNote, t, dur, vel) {
+    var freq = 440 * Math.pow(2, (midiNote - 69) / 12);
+    var ctx = _audioCtx, dec = Math.min(dur, 0.30);
+    // Bright piano layer
+    var master = ctx.createGain(); master.connect(_chordGain);
+    var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 4200; lp.Q.value = 0.5;
+    lp.connect(master);
+    [[1, 0.65, 'sawtooth'], [2, 0.22, 'square'], [3, 0.08, 'sine']].forEach(function(h) {
+      var osc = ctx.createOscillator(), g = ctx.createGain();
+      osc.type = h[2]; osc.frequency.value = freq * h[0];
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(vel * h[1], t + 0.003);
+      g.gain.exponentialRampToValueAtTime(vel * h[1] * 0.15, t + 0.04);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + dec);
+      osc.connect(g); g.connect(lp);
+      osc.start(t); osc.stop(t + dec + 0.05);
+    });
+    master.gain.setValueAtTime(0.85, t);
+  }
+
   // ── Style → instrument routing ──────────────────────────────────────────────
   var _STYLE_INSTR = {
     'Ballad':        'strings',
@@ -1760,6 +1863,10 @@ _TOOLTIP_JS = """
     'Vibraphone':    'vibes',
     'Funk Chop':     'clav',
     'Lo-Fi':         'rhodes',
+    'Acoustic':      'acoustic',
+    'Disco Pop':     'disco',
+    'Brushed Trio':  'rhodes',
+    'Jazz Shell':    'rhodes',
   };
 
   var _INSTR_LABEL = {
@@ -1782,6 +1889,8 @@ _TOOLTIP_JS = """
     else if (inst === 'rhodes')       _playRhodesNote(midi, t, dur, vel);
     else if (inst === 'vibes')        _playVibesNote(midi, t, dur, vel);
     else if (inst === 'clav')         _playClav(midi, t, dur, vel);
+    else if (inst === 'acoustic')     _playAcousticNote(midi, t, dur, vel);
+    else if (inst === 'disco')        _playDiscoNote(midi, t, dur, vel);
     else                              _playPianoNote(midi, t, dur, vel);
   }
 
@@ -2334,6 +2443,39 @@ _TOOLTIP_JS = """
       {beat:2,   type:'bass',  vel:0.60, d:2},
       {beat:2.5, type:'chord', vel:0.62, d:1},
       {beat:3.5, type:'chord', vel:0.44, d:2}]; },
+    // Acoustic: fingerpick pattern — bass on 1, plucked arpeggiated chord fills
+    'Acoustic': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.82, d:1},
+      {beat:0.5,  type:'chord', vel:0.52, d:1},
+      {beat:1,    type:'chord', vel:0.42, d:2},
+      {beat:1.5,  type:'chord', vel:0.56, d:1},
+      {beat:2,    type:'bass',  vel:0.72, d:2},
+      {beat:2.5,  type:'chord', vel:0.50, d:1},
+      {beat:3,    type:'chord', vel:0.44, d:2},
+      {beat:3.5,  type:'chord', vel:0.58, d:1}]; },
+    // Disco Pop: four-on-the-floor bass, punchy off-beat chords
+    'Disco Pop': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.90, d:1},
+      {beat:0.5,  type:'chord', vel:0.70, d:1},
+      {beat:1,    type:'bass',  vel:0.80, d:1},
+      {beat:1.5,  type:'chord', vel:0.62, d:1},
+      {beat:2,    type:'bass',  vel:0.88, d:1},
+      {beat:2.5,  type:'chord', vel:0.72, d:1},
+      {beat:3,    type:'bass',  vel:0.78, d:1},
+      {beat:3.5,  type:'chord', vel:0.68, d:1}]; },
+    // Brushed Trio: sparse jazz feel, chord on 2+4 only, walking bass
+    'Brushed Trio': function(bpb) { return [
+      {beat:0,   type:'bass',  vel:0.72, d:1},
+      {beat:1,   type:'chord', vel:0.50, d:1},
+      {beat:2,   type:'bass',  vel:0.60, d:2},
+      {beat:3,   type:'chord', vel:0.55, d:1}]; },
+    // Jazz Shell: very open comping — long spaces, shell voicings, comp on "and" beats
+    'Jazz Shell': function(bpb) { return [
+      {beat:0,    type:'bass',  vel:0.70, d:1},
+      {beat:0.5,  type:'chord', vel:0.42, d:1},
+      {beat:1.5,  type:'chord', vel:0.50, d:2},
+      {beat:2.5,  type:'chord', vel:0.45, d:1},
+      {beat:3.5,  type:'chord', vel:0.55, d:2}]; },
   };
 
   // ── Drum pattern library ─────────────────────────────────────────────────────
@@ -2504,6 +2646,49 @@ _TOOLTIP_JS = """
     {beat:1,   type:'clap',  vel:0.50,d:2},{beat:3,   type:'clap',  vel:0.50,d:2},
   ]},
 
+  'Acoustic': { label:'Acoustic', cat:'Soft', events: [
+    {beat:0,   type:'kick',  vel:0.60,d:1},{beat:2,   type:'kick',  vel:0.45,d:2},
+    {beat:1,   type:'snare', vel:0.48,d:1},{beat:3,   type:'snare', vel:0.48,d:1},
+    {beat:0,   type:'hihat', vel:0.28,d:1},{beat:0.5, type:'hihat', vel:0.16,d:2},
+    {beat:1,   type:'hihat', vel:0.24,d:1},{beat:1.5, type:'hihat', vel:0.14,d:2},
+    {beat:2,   type:'hihat', vel:0.24,d:1},{beat:2.5, type:'hihat', vel:0.14,d:2},
+    {beat:3,   type:'hihat', vel:0.22,d:1},{beat:3.5, type:'hihat', vel:0.12,d:2},
+  ]},
+
+  'Disco Pop': { label:'Disco Pop', cat:'Pop', events: [
+    // Four-on-the-floor kick, clap on 2+4, open hi-hat on 8th off-beats
+    {beat:0,    type:'kick',      vel:0.90,d:1},{beat:1,    type:'kick',  vel:0.85,d:1},
+    {beat:2,    type:'kick',      vel:0.92,d:1},{beat:3,    type:'kick',  vel:0.88,d:1},
+    {beat:1,    type:'clap',      vel:0.80,d:1},{beat:3,    type:'clap',  vel:0.82,d:1},
+    {beat:1,    type:'snare',     vel:0.55,d:2},{beat:3,    type:'snare', vel:0.55,d:2},
+    {beat:0.5,  type:'hihat_open',vel:0.50,d:1},{beat:1.5,  type:'hihat_open',vel:0.46,d:1},
+    {beat:2.5,  type:'hihat_open',vel:0.50,d:1},{beat:3.5,  type:'hihat_open',vel:0.46,d:1},
+    {beat:0,    type:'hihat',     vel:0.40,d:2},{beat:1,    type:'hihat', vel:0.38,d:2},
+    {beat:2,    type:'hihat',     vel:0.40,d:2},{beat:3,    type:'hihat', vel:0.38,d:2},
+  ]},
+
+  'Brushed Trio': { label:'Brushed Trio', cat:'Jazz', events: [
+    // Ride on triplet grid, brushed snare on 2+4, very light kick
+    {beat:0,     type:'ride',  vel:0.48,d:1},{beat:0.667,type:'ride', vel:0.32,d:1},
+    {beat:1,     type:'ride',  vel:0.44,d:1},{beat:1.667,type:'ride', vel:0.32,d:1},
+    {beat:2,     type:'ride',  vel:0.46,d:1},{beat:2.667,type:'ride', vel:0.32,d:1},
+    {beat:3,     type:'ride',  vel:0.44,d:1},{beat:3.667,type:'ride', vel:0.32,d:1},
+    {beat:1,     type:'hihat', vel:0.28,d:1},{beat:3,    type:'hihat',vel:0.28,d:1},
+    {beat:0,     type:'kick',  vel:0.38,d:2},{beat:2,    type:'kick', vel:0.32,d:3},
+    {beat:1,     type:'snare', vel:0.35,d:1},{beat:3,    type:'snare',vel:0.35,d:1},
+  ]},
+
+  'Jazz Shell': { label:'Jazz Shell', cat:'Jazz', events: [
+    {beat:0,     type:'ride',  vel:0.52,d:1},{beat:0.667,type:'ride', vel:0.35,d:1},
+    {beat:1,     type:'ride',  vel:0.48,d:1},{beat:1.667,type:'ride', vel:0.35,d:1},
+    {beat:2,     type:'ride',  vel:0.50,d:1},{beat:2.667,type:'ride', vel:0.35,d:1},
+    {beat:3,     type:'ride',  vel:0.48,d:1},{beat:3.667,type:'ride', vel:0.35,d:1},
+    {beat:1,     type:'hihat', vel:0.30,d:1},{beat:3,    type:'hihat',vel:0.30,d:1},
+    {beat:0,     type:'kick',  vel:0.45,d:2},
+    {beat:1,     type:'ghost', vel:0.18,d:2},{beat:2.5,  type:'ghost',vel:0.16,d:3},
+    {beat:3,     type:'snare', vel:0.38,d:1},
+  ]},
+
   }; // end _DRUM_LIBRARY
 
   // ── Passing chord builder ────────────────────────────────────────────────────
@@ -2567,11 +2752,18 @@ _TOOLTIP_JS = """
     var bassChar  = _humanize * Math.random() * 0.013;           // pocket: bass slightly late
     var chordAnti = _humanize * (0.006 + Math.random() * 0.013); // anticipation: chords slightly early
 
-    // Pre-compute voiced MIDI notes for proper octave spread on piano
-    var voicedMidi = _voiceNotesToMidi(notes);
+    // Pre-compute voiced MIDI notes with style-aware extensions
+    var voicedMidi = _voiceNotesToMidi(notes, st.style);
+
+    // Swing amount: 1.0 = full triplet swing, 0 = straight
+    var swingAmt = 0;
+    if (st.style === 'Jazz' || st.style === 'Rhodes Jazz' || st.style === 'Brushed Trio' ||
+        st.style === 'Jazz Shell' || st.style === 'Blues') swingAmt = 0.88;
+    else if (st.style === 'Lo-Fi') swingAmt = 0.45; // gentle shuffle
 
     var nextChord = st.chords[(st.idx + 1) % st.chords.length];
-    var walkingBass = (st.style === 'Rhodes Jazz' || st.style === 'Jazz' || st.style === 'Vibraphone');
+    var walkingBass = (st.style === 'Rhodes Jazz' || st.style === 'Jazz' || st.style === 'Vibraphone' ||
+                       st.style === 'Brushed Trio' || st.style === 'Jazz Shell');
 
     if (st.style === 'Arpeggio Up' || st.style === 'Arpeggio Down') {
       if (cd > 0) {
@@ -2593,7 +2785,8 @@ _TOOLTIP_JS = """
                     ? 1 + Math.floor(Math.random() * (notes.length - 2)) : -1;
 
       pattern.forEach(function(evt) {
-        var t = startTime + evt.beat * st.beatDur
+        var swungBeat = _swingBeat(evt.beat, swingAmt);
+        var t = startTime + swungBeat * st.beatDur
                 + _clockDrift
                 + (evt.type === 'bass'  ?  bassChar  : 0)
                 + (evt.type === 'chord' ? -chordAnti : 0);
@@ -2642,7 +2835,7 @@ _TOOLTIP_JS = """
         if (dd < evt.d || evt.beat >= st.bpb) return;
         // Open bars: drums pull way back (only beat 1 kick + sparse hat)
         if (isOpenBar && evt.type !== 'kick' && evt.beat !== 0) return;
-        var drumT = startTime + evt.beat * st.beatDur
+        var drumT = startTime + _swingBeat(evt.beat, swingAmt) * st.beatDur
                     + _clockDrift + (Math.random() - 0.5) * _humanize * 0.012;
         // Occasional hi-hat type swap on the off-beat (human drummer variation)
         var etype = evt.type;
@@ -2708,11 +2901,30 @@ _TOOLTIP_JS = """
     return pool[pool.length-1];
   }
 
+  // Style → default drum pattern (only auto-selects if user hasn't manually changed drum)
+  var _STYLE_DEFAULT_DRUM = {
+    'Jazz':         'Jazz Swing', 'Rhodes Jazz':  'Jazz Swing',
+    'Jazz Shell':   'Jazz Shell', 'Brushed Trio': 'Brushed Trio',
+    'Vibraphone':   'Jazz Swing', 'Bossa Nova':   'Bossa Nova',
+    'Blues':        'Funk Light', 'Funk Chop':    'Funk Heavy',
+    'Disco Pop':    'Disco Pop',  'Acoustic':     'Acoustic',
+    'Ballad':       'Ballad',     'Pad':          'Ballad',
+    'Lo-Fi':        'Ballad',     'Waltz':        'Ballad',
+    'Rhodes':       'Rock Basic', 'Honky Tonk':   'Rock Basic',
+  };
+  var _drumUserOverride = false;
+
   function _readLiveParams() {
     var bpm = parseFloat(document.getElementById('ctrl-bpm') && document.getElementById('ctrl-bpm').value) || 120;
     var ts  = (document.getElementById('ctrl-timesig') && document.getElementById('ctrl-timesig').value) || '4/4';
     var sty = (document.getElementById('ctrl-style')   && document.getElementById('ctrl-style').value)   || 'Ballad';
     var bpc = parseFloat((document.getElementById('ctrl-bpc') && document.getElementById('ctrl-bpc').value) || 2);
+    // Auto-select drum pattern based on style (unless user has explicitly picked one)
+    if (!_drumUserOverride && _STYLE_DEFAULT_DRUM[sty]) {
+      _activeDrumPattern = _STYLE_DEFAULT_DRUM[sty];
+      var drumSel = document.querySelector('select.mix-density:last-of-type');
+      if (drumSel && drumSel.value !== _activeDrumPattern) drumSel.value = _activeDrumPattern;
+    }
     return { bpm:bpm, bpb:parseInt(ts.split('/')[0])||4, beatDur:60/bpm, style:sty, barsPerChord:Math.max(0.5, bpc) };
   }
 
@@ -4547,16 +4759,19 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
               <option>Rhodes</option><option>Rhodes Jazz</option><option>Lo-Fi</option>
               <option>Honky Tonk</option>
             </optgroup>
-            <optgroup label="── Pitched ──">
-              <option>Vibraphone</option><option>Ballad</option><option>Pad</option>
-              <option>Waltz</option>
+            <optgroup label="── Jazz ──">
+              <option>Jazz</option><option>Jazz Shell</option><option>Brushed Trio</option>
+              <option>Vibraphone</option>
             </optgroup>
-            <optgroup label="── Guitar ──">
-              <option>Jazz</option><option>Bossa Nova</option>
+            <optgroup label="── Pop / Soul ──">
+              <option>Disco Pop</option><option>Funk Chop</option><option>Ballad</option>
+              <option>Acoustic</option>
             </optgroup>
-            <optgroup label="── Rhythm ──">
-              <option>Blues</option><option>Funk Chop</option>
-              <option>Arpeggio Up</option><option>Arpeggio Down</option>
+            <optgroup label="── World ──">
+              <option>Bossa Nova</option><option>Blues</option><option>Waltz</option>
+            </optgroup>
+            <optgroup label="── Texture ──">
+              <option>Pad</option><option>Arpeggio Up</option><option>Arpeggio Down</option>
             </optgroup>
           </select>
         </div>
@@ -4660,7 +4875,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
               <option value="3">Dense</option><option value="0">Off</option>
             </select>
             <select class="mix-density" style="margin-top:4px"
-              onchange="window.setDrumPattern&&window.setDrumPattern(this.value)">
+              onchange="window._drumUserOverride=true;window.setDrumPattern&&window.setDrumPattern(this.value)">
               <optgroup label="Soft"><option>Ballad</option></optgroup>
               <optgroup label="Rock">
                 <option selected>Rock Basic</option>
@@ -4677,7 +4892,13 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
               </optgroup>
               <optgroup label="Jazz / Latin">
                 <option>Jazz Swing</option>
+                <option>Brushed Trio</option>
+                <option>Jazz Shell</option>
                 <option>Bossa Nova</option>
+              </optgroup>
+              <optgroup label="Pop">
+                <option>Disco Pop</option>
+                <option>Acoustic</option>
               </optgroup>
               <optgroup label="Groove">
                 <option>Double Time</option>
