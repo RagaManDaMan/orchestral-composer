@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+*.egg
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# Generated outputs
+outputs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# Gradio temp files
+flagged/
+gradio_cached_examples/
+
+# Large binary / model files — too big for GitHub
+models/
+samples/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.mp3
+*.wav
+*.flac
+*.ogg
