@@ -1147,14 +1147,59 @@ _ROLL_JS = r"""
     document.getElementById('dl-btn').onclick=exportMidi;
   }
 
-  /* wait for mm library then load */
+  /* -- playhead needle -- */
+  function startPlayhead(){
+    const wrap=document.getElementById('roll-wrap');
+    const ph=document.getElementById('ph');
+    if(!wrap||!ph) return;
+    const player=document.querySelector('midi-player');
+
+    function frame(){
+      requestAnimationFrame(frame);
+      const cv=document.getElementById('rc');
+      if(!cv) return;
+      const H=cv.height;
+      // resize overlay to match visible viewport
+      if(ph.width!==wrap.clientWidth||ph.height!==H){
+        ph.width=wrap.clientWidth; ph.height=H;
+      }
+      const ctx=ph.getContext('2d');
+      ctx.clearRect(0,0,ph.width,ph.height);
+      if(!player) return;
+      const t=player.currentTime||0;
+      if(t<=0) return;
+      const xCanvas=tToX(t);           // position in full canvas coords
+      const xView=xCanvas-wrap.scrollLeft; // position in viewport
+      // auto-scroll: keep needle 30% from left edge
+      const target=xCanvas-wrap.clientWidth*0.3;
+      if(xView>wrap.clientWidth*0.75||xView<KEY_W)
+        wrap.scrollLeft=Math.max(0,target);
+      // draw needle
+      const xDraw=xCanvas-wrap.scrollLeft;
+      if(xDraw<KEY_W||xDraw>wrap.clientWidth) return;
+      ctx.fillStyle='rgba(255,255,255,0.15)';
+      ctx.fillRect(xDraw,0,2,H);
+      ctx.fillStyle='#ffffff';
+      ctx.fillRect(xDraw,0,1.5,H);
+      // glow
+      const grad=ctx.createLinearGradient(xDraw-6,0,xDraw+6,0);
+      grad.addColorStop(0,'rgba(100,180,255,0)');
+      grad.addColorStop(0.5,'rgba(100,180,255,0.35)');
+      grad.addColorStop(1,'rgba(100,180,255,0)');
+      ctx.fillStyle=grad;
+      ctx.fillRect(xDraw-6,0,12,H);
+    }
+    frame();
+  }
+
+  /* wait for @tonejs/midi then load */
   function waitAndLoad(url){
     if(typeof Midi!=='undefined'){ load(url); }
     else { setTimeout(()=>waitAndLoad(url), 100); }
   }
 
   window._rollReload=function(url){ waitAndLoad(url); };
-  window.addEventListener('load',()=>{ init(); waitAndLoad(MIDI_URL); });
+  window.addEventListener('load',()=>{ init(); waitAndLoad(MIDI_URL); startPlayhead(); });
 })();
 """
 
@@ -1166,8 +1211,9 @@ def _make_simple_player(midi_path: str) -> str:
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@magenta/music@1.23.1/es6/core.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0"></script>
 <style>{_ROLL_CSS}</style></head><body>
 <midi-player src="{midi_url}" sound-font></midi-player>
 <div id="toolbar">
@@ -1188,7 +1234,7 @@ def _make_simple_player(midi_path: str) -> str:
 </div>
 <div id="roll-status" style="padding:3px 6px;font-size:9px;color:#557799;background:#090d14;">Loading...</div>
 <div id="roll-area">
-  <div id="roll-wrap" class="draw"><canvas id="rc"></canvas></div>
+  <div id="roll-wrap" class="draw" style="position:relative;"><canvas id="rc"></canvas><canvas id="ph" style="position:absolute;top:0;left:0;pointer-events:none;z-index:3;"></canvas></div>
   <div id="vel-wrap"><canvas id="vel-cv"></canvas><span id="vel-label">vel</span></div>
 </div>
 <div id="tracks-legend"></div>
@@ -1212,8 +1258,9 @@ def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> s
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@magenta/music@1.23.1/es6/core.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0"></script>
 <style>{_ROLL_CSS}
   #btns{{display:flex;gap:6px;margin-bottom:6px;}}
   #play-btn{{background:#1a3a80;color:#aaccff;border:1px solid #2244aa;}} #stop-btn{{background:#1a1a2a;color:#778899;border:1px solid #222;}}
@@ -1245,7 +1292,7 @@ def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> s
 </div>
 <div id="roll-status" style="padding:3px 6px;font-size:9px;color:#557799;background:#090d14;">Loading...</div>
 <div id="roll-area">
-  <div id="roll-wrap" class="draw"><canvas id="rc"></canvas></div>
+  <div id="roll-wrap" class="draw" style="position:relative;"><canvas id="rc"></canvas><canvas id="ph" style="position:absolute;top:0;left:0;pointer-events:none;z-index:3;"></canvas></div>
   <div id="vel-wrap"><canvas id="vel-cv"></canvas><span id="vel-label">vel</span></div>
 </div>
 <div id="tracks-legend"></div>
@@ -1284,8 +1331,9 @@ def _make_variation_player(paths: list[str], stem_name: str, num_variations: int
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js" defer></script>
-<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@magenta/music@1.23.1/es6/core.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0"></script>
 <style>{_ROLL_CSS}
   .vtab.on{{background:#1a3a6a;border-color:#4477cc;color:#88bbff;}}
 </style></head><body>
@@ -1310,7 +1358,7 @@ def _make_variation_player(paths: list[str], stem_name: str, num_variations: int
 <midi-player id="mp" sound-font></midi-player>
 <div id="roll-status" style="padding:3px 6px;font-size:9px;color:#557799;background:#090d14;">Loading...</div>
 <div id="roll-area">
-  <div id="roll-wrap" class="draw"><canvas id="rc"></canvas></div>
+  <div id="roll-wrap" class="draw" style="position:relative;"><canvas id="rc"></canvas><canvas id="ph" style="position:absolute;top:0;left:0;pointer-events:none;z-index:3;"></canvas></div>
   <div id="vel-wrap"><canvas id="vel-cv"></canvas><span id="vel-label">vel</span></div>
 </div>
 <div id="tracks-legend"></div>
