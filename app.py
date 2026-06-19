@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 Orchestral Composer
 Gradio web app: supply a melody (or let AI generate one) → chord arrangement → MIDI.
@@ -287,6 +288,58 @@ def arrange_in_composer(selected, root, mode, tempo):
     key_str = f"{root} {mode}" if root and mode else (root or "")
     # use_flat_prog=True so the exact palette chords (not the text field) drive the MIDI
     return chords, "Manual", key_str, tempo, True
+
+
+def crystallize_bridge(payload: str):
+    """Live Recorder → Composer: parse JS payload and pre-fill composer inputs."""
+    import json
+    try:
+        d = json.loads(payload)
+    except Exception:
+        return gr.update(), gr.update(), gr.update(), gr.update()
+    chords = d.get("chords", "Dm7 G7 Cmaj7 Am7")
+    root   = d.get("root", "C")
+    mode   = d.get("mode", "Major (Ionian)")
+    tempo  = float(d.get("bpm", 120))
+    # Convert Live Recorder mode names to Composer key strings
+    mode_map = {
+        "Major (Ionian)": "major", "Natural Minor (Aeolian)": "minor",
+        "Dorian": "dorian", "Phrygian": "phrygian", "Lydian": "lydian",
+        "Mixolydian": "mixolydian", "Locrian": "locrian",
+        "Harmonic Minor": "harmonic minor", "Melodic Minor": "melodic minor",
+        "Major Pentatonic": "major pentatonic", "Minor Pentatonic": "minor pentatonic",
+        "Blues Scale": "blues", "Whole Tone": "whole tone",
+    }
+    mode_str = mode_map.get(mode, "major")
+    key_str  = f"{root} {mode_str}"
+    return gr.update(value=chords), gr.update(value="Manual"), gr.update(value=key_str), gr.update(value=tempo)
+
+
+def ghost_orch_bridge(payload: str):
+    """Same pre-fill but returns Harmony-only melody source for fast generation."""
+    import json
+    try:
+        d = json.loads(payload)
+    except Exception:
+        return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+    chords = d.get("chords", "Dm7 G7 Cmaj7 Am7")
+    root   = d.get("root", "C")
+    mode   = d.get("mode", "Major (Ionian)")
+    tempo  = float(d.get("bpm", 120))
+    mode_map = {
+        "Major (Ionian)": "major", "Natural Minor (Aeolian)": "minor",
+        "Dorian": "dorian", "Phrygian": "phrygian", "Lydian": "lydian",
+        "Mixolydian": "mixolydian", "Locrian": "locrian",
+        "Harmonic Minor": "harmonic minor", "Melodic Minor": "melodic minor",
+        "Major Pentatonic": "major pentatonic", "Minor Pentatonic": "minor pentatonic",
+        "Blues Scale": "blues", "Whole Tone": "whole tone",
+    }
+    mode_str = mode_map.get(mode, "major")
+    key_str  = f"{root} {mode_str}"
+    # Harmony only = fast, no AI, suitable for background orchestra
+    return (gr.update(value=chords), gr.update(value="Manual"),
+            gr.update(value=key_str), gr.update(value=tempo),
+            gr.update(value="Harmony only"))
 
 
 # ---------------------------------------------------------------------------
@@ -627,6 +680,225 @@ def _build_chord_timeline(
     return chord_timeline, total_beats, chord_chart, summary, section_map
 
 
+_ROLL_CSS = """
+  *{box-sizing:border-box;}
+  body{margin:0;padding:6px;background:#080e18;font-family:'JetBrains Mono',monospace;font-size:11px;color:#99aabb;}
+  midi-player{display:block;width:100%;margin-bottom:4px;}
+  #toolbar{display:flex;gap:6px;align-items:center;margin-bottom:5px;flex-wrap:wrap;}
+  .tb{padding:3px 10px;border:1px solid #1e2a3a;border-radius:3px;background:#0d1520;color:#7799bb;cursor:pointer;font-size:10px;font-family:inherit;}
+  .tb:hover{background:#162030;color:#aaccff;}
+  .tb.on{background:#0d2040;border-color:#3366aa;color:#77aaee;}
+  #zoom{display:flex;gap:4px;align-items:center;margin-left:auto;}
+  #hint{font-size:9px;color:#334455;margin-left:6px;}
+  #roll-wrap{overflow:auto;border:1px solid #111c28;border-radius:3px;cursor:crosshair;}
+  canvas{display:block;}
+  #tracks-legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;font-size:9px;}
+  .track-dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px;}
+"""
+
+_ROLL_JS = r"""
+(function(){
+  const MIDI_URL = window.__MIDI_URL__;
+  const NOTE_H = 9, KEY_W = 32, PX_SEC = 80;
+  let notes=[], totalTime=0, bpm=120, ns=null;
+  let editOn=false, tool='draw'; // tool: draw | erase
+  let drawing=null; // {pitch,startTime,startX,startY}
+  let zoom=1.0;
+  let minP=21, maxP=108;
+
+  const COLORS=['#4488ff','#ff6644','#44cc88','#cc44ff','#ffaa22','#22ddcc','#ff4488','#aacc44'];
+
+  async function load(){
+    try{
+      const r=await fetch(MIDI_URL);
+      const blob=await r.blob();
+      ns=await mm.midi.blobToNoteSequence(blob);
+      notes=ns.notes.map(n=>({pitch:n.pitch,startTime:n.startTime,endTime:n.endTime,
+        velocity:n.velocity||80,instrument:n.instrument||0,program:n.program||0}));
+      totalTime=ns.totalTime||4;
+      if(ns.tempos&&ns.tempos.length) bpm=ns.tempos[0].qpm;
+      const ps=notes.map(n=>n.pitch);
+      minP=Math.max(0,Math.min(...ps)-3);
+      maxP=Math.min(127,Math.max(...ps)+3);
+      buildLegend();
+      render();
+    }catch(e){console.error('roll load:',e);}
+  }
+
+  function render(){
+    const cv=document.getElementById('rc');
+    if(!cv)return;
+    const ctx=cv.getContext('2d');
+    const numP=maxP-minP+1;
+    const W=Math.max(500,Math.round((totalTime*PX_SEC*zoom)+KEY_W+16));
+    const H=numP*NOTE_H;
+    cv.width=W; cv.height=H;
+    cv.style.width=W+'px'; cv.style.height=H+'px';
+
+    // Background rows
+    for(let p=minP;p<=maxP;p++){
+      const y=(maxP-p)*NOTE_H;
+      const pc=p%12, isB=[1,3,6,8,10].includes(pc);
+      ctx.fillStyle=isB?'#07090f':'#0b1018';
+      ctx.fillRect(KEY_W,y,W-KEY_W,NOTE_H);
+      // Key label
+      ctx.fillStyle=isB?'#111820':'#141e28';
+      ctx.fillRect(0,y,KEY_W,NOTE_H);
+      if(pc===0){
+        ctx.fillStyle='#1a2838';
+        ctx.fillRect(KEY_W,y,W-KEY_W,1);
+        ctx.fillStyle='#445566';
+        ctx.font='7px monospace';
+        ctx.fillText('C'+(Math.floor(p/12)-1),2,y+NOTE_H-2);
+      }
+      if(pc===5){ctx.fillStyle='#0f1820';ctx.fillRect(KEY_W,y,W-KEY_W,1);}
+    }
+
+    // Beat grid
+    const spb=60/bpm;
+    for(let t=0;t<=totalTime+spb;t+=spb){
+      const x=KEY_W+t*PX_SEC*zoom;
+      const beat=Math.round(t/spb);
+      ctx.fillStyle=beat%4===0?'#1a3050':'#101820';
+      ctx.fillRect(x,0,beat%4===0?2:1,H);
+      if(beat%4===0){
+        ctx.fillStyle='#2a4060';
+        ctx.font='7px monospace';
+        ctx.fillText('B'+(beat+1),x+2,H-2);
+      }
+    }
+
+    // Notes
+    notes.forEach(n=>{
+      const x=KEY_W+n.startTime*PX_SEC*zoom;
+      const w=Math.max(3,(n.endTime-n.startTime)*PX_SEC*zoom-1);
+      const y=(maxP-n.pitch)*NOTE_H+1;
+      const h=NOTE_H-2;
+      const col=COLORS[(n.instrument||n.program||0)%COLORS.length];
+      const v=(n.velocity||80)/127;
+      ctx.globalAlpha=0.55+v*0.45;
+      ctx.fillStyle=col;
+      ctx.fillRect(x,y,w,h);
+      ctx.globalAlpha=1;
+      ctx.fillStyle='rgba(255,255,255,0.25)';
+      ctx.fillRect(x,y,w,2);
+    });
+  }
+
+  function xyToNoteTime(ev){
+    const cv=document.getElementById('rc');
+    const wrap=document.getElementById('roll-wrap');
+    const rect=cv.getBoundingClientRect();
+    const sx=ev.clientX-rect.left+wrap.scrollLeft;
+    const sy=ev.clientY-rect.top+wrap.scrollTop;
+    const pitch=maxP-Math.floor(sy/NOTE_H);
+    const time=(sx-KEY_W)/(PX_SEC*zoom);
+    return{pitch,time,x:sx,y:sy};
+  }
+
+  function setupMouse(){
+    const cv=document.getElementById('rc');
+    const wrap=document.getElementById('roll-wrap');
+    if(!cv)return;
+
+    cv.addEventListener('mousedown',e=>{
+      if(!editOn)return;
+      e.preventDefault();
+      const{pitch,time,x,y}=xyToNoteTime(e);
+      if(pitch<0||pitch>127||time<0)return;
+
+      if(tool==='erase'||(e.button===2)){
+        // delete note under cursor
+        const idx=notes.findIndex(n=>
+          pitch===n.pitch && time>=n.startTime && time<=n.endTime);
+        if(idx>=0){notes.splice(idx,1);render();}
+        return;
+      }
+      // draw mode: start new note
+      drawing={pitch,startTime:Math.max(0,time),startX:x};
+    });
+
+    cv.addEventListener('mousemove',e=>{
+      if(!editOn||!drawing)return;
+      const{time}=xyToNoteTime(e);
+      // Preview: re-render + draw ghost note
+      render();
+      const ctx=cv.getContext('2d');
+      const endTime=Math.max(drawing.startTime+0.05,time);
+      const x=KEY_W+drawing.startTime*PX_SEC*zoom;
+      const w=Math.max(4,(endTime-drawing.startTime)*PX_SEC*zoom);
+      const y=(maxP-drawing.pitch)*NOTE_H+1;
+      ctx.fillStyle='rgba(100,180,255,0.7)';
+      ctx.fillRect(x,y,w,NOTE_H-2);
+    });
+
+    cv.addEventListener('mouseup',e=>{
+      if(!editOn||!drawing)return;
+      const{time}=xyToNoteTime(e);
+      const endTime=Math.max(drawing.startTime+(60/bpm*0.25),time);
+      notes.push({pitch:drawing.pitch,startTime:drawing.startTime,
+        endTime:endTime,velocity:80,instrument:0,program:0});
+      notes.sort((a,b)=>a.startTime-b.startTime);
+      totalTime=Math.max(totalTime,endTime+0.5);
+      drawing=null;
+      render();
+    });
+
+    cv.addEventListener('contextmenu',e=>{e.preventDefault();});
+    wrap.addEventListener('mouseleave',()=>{if(drawing){drawing=null;render();}});
+  }
+
+  function buildLegend(){
+    const el=document.getElementById('tracks-legend');
+    if(!el)return;
+    const progs={};
+    notes.forEach(n=>{const k=n.program||0;progs[k]=(progs[k]||0)+1;});
+    el.innerHTML=Object.keys(progs).map(p=>{
+      const col=COLORS[parseInt(p)%COLORS.length];
+      return`<span><span class="track-dot" style="background:${col}"></span>Prog ${p} (${progs[p]}n)</span>`;
+    }).join('');
+  }
+
+  function exportMidi(){
+    if(!ns||!notes.length)return;
+    const out=JSON.parse(JSON.stringify(ns));
+    out.notes=notes.map(n=>({
+      pitch:n.pitch,startTime:n.startTime,endTime:n.endTime,
+      velocity:n.velocity||80,instrument:n.instrument||0,program:n.program||0
+    }));
+    out.totalTime=Math.max(...notes.map(n=>n.endTime));
+    try{
+      const bytes=mm.midi.noteSequenceToMidi(out);
+      const blob=new Blob([bytes],{type:'audio/midi'});
+      const a=document.createElement('a');
+      a.href=URL.createObjectURL(blob);
+      a.download='edited_arrangement.mid';
+      a.click();
+    }catch(e){alert('Export error: '+e.message);}
+  }
+
+  window.addEventListener('load',()=>{
+    load().then(()=>{
+      setupMouse();
+      document.getElementById('edit-btn').onclick=function(){
+        editOn=!editOn;
+        this.classList.toggle('on',editOn);
+        document.getElementById('rc').style.cursor=editOn?'crosshair':'default';
+        document.getElementById('hint').textContent=
+          editOn?'Left-click+drag = add note  ·  Right-click = erase':'';
+      };
+      document.getElementById('erase-btn').onclick=function(){
+        tool=tool==='erase'?'draw':'erase';
+        this.classList.toggle('on',tool==='erase');
+      };
+      document.getElementById('dl-btn').onclick=exportMidi;
+      document.getElementById('zi').onclick=()=>{zoom=Math.min(4,zoom*1.4);render();};
+      document.getElementById('zo').onclick=()=>{zoom=Math.max(0.2,zoom/1.4);render();};
+    });
+  });
+})();
+"""
+
 def _make_simple_player(midi_path: str) -> str:
     """Build a single-file MIDI player iframe and return the iframe HTML."""
     midi_fname   = Path(midi_path).name
@@ -635,16 +907,21 @@ def _make_simple_player(midi_path: str) -> str:
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <script src="https://cdn.jsdelivr.net/combine/npm/tone@14,npm/@magenta/music@1.23.1/es6/core.js,npm/html-midi-player@1.5.0"></script>
-<style>
-  body{{margin:0;padding:8px;background:#f9fafb;font-family:sans-serif;font-size:12px;color:#374151;}}
-  midi-player{{display:block;width:100%;}}
-  midi-visualizer{{display:block;width:100%;height:120px;margin-top:4px;border-radius:6px;}}
-</style></head><body>
+<style>{_ROLL_CSS}</style></head><body>
 <midi-player src="{midi_url}" sound-font></midi-player>
-<midi-visualizer type="piano-roll" src="{midi_url}"></midi-visualizer>
+<div id="toolbar">
+  <button class="tb" id="edit-btn">Edit</button>
+  <button class="tb" id="erase-btn">Erase</button>
+  <button class="tb" id="dl-btn">Export MIDI</button>
+  <span id="hint"></span>
+  <div id="zoom"><button class="tb" id="zi">+</button><button class="tb" id="zo">-</button></div>
+</div>
+<div id="roll-wrap"><canvas id="rc"></canvas></div>
+<div id="tracks-legend"></div>
+<script>window.__MIDI_URL__="{midi_url}";{_ROLL_JS}</script>
 </body></html>""")
     player_url = f"http://127.0.0.1:{PREVIEW_PORT}/{player_fname}"
-    return f'<iframe src="{player_url}" style="width:100%;height:200px;border:none;border-radius:8px;" loading="lazy"></iframe>'
+    return f'<iframe src="{player_url}" style="width:100%;height:260px;border:none;border-radius:8px;" loading="lazy"></iframe>'
 
 
 def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> str:
@@ -661,38 +938,41 @@ def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> s
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <script src="https://cdn.jsdelivr.net/combine/npm/tone@14,npm/@magenta/music@1.23.1/es6/core.js,npm/html-midi-player@1.5.0"></script>
-<style>
-  body{{margin:0;padding:8px;background:#f9fafb;font-family:sans-serif;font-size:12px;color:#444;}}
-  #btns{{display:flex;gap:8px;margin-bottom:8px;}}
-  #btns button{{padding:6px 18px;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;}}
-  #play-btn{{background:#2563eb;color:#fff;}} #stop-btn{{background:#e5e7eb;color:#374151;}}
-  #orig{{width:100%;height:34px;display:block;margin-bottom:6px;}}
-  midi-player{{display:block;width:100%;}}
-  midi-visualizer{{display:block;width:100%;height:120px;margin-top:4px;border-radius:6px;}}
+<style>{_ROLL_CSS}
+  #btns{{display:flex;gap:6px;margin-bottom:6px;}}
+  #play-btn{{background:#1a3a80;color:#aaccff;border:1px solid #2244aa;}} #stop-btn{{background:#1a1a2a;color:#778899;border:1px solid #222;}}
+  #orig{{width:100%;height:28px;display:block;margin-bottom:5px;}}
+  #timeinfo{{font-size:9px;color:#334455;margin-bottom:4px;}}
 </style></head><body>
 <div id="btns">
-  <button id="play-btn">&#9654; Play Both</button>
-  <button id="stop-btn">&#9646;&#9646; Stop</button>
+  <button class="tb" id="play-btn">&#9654; Play Both</button>
+  <button class="tb" id="stop-btn">&#9646;&#9646; Stop</button>
 </div>
-<audio id="orig" src="{audio_url}" controls></audio>
+<audio id="orig" src="{audio_url}" controls style="width:100%;height:28px;margin-bottom:4px;"></audio>
+<div id="timeinfo"></div>
 <midi-player id="midi" src="{midi_url}" sound-font></midi-player>
-<midi-visualizer type="piano-roll" src="{midi_url}"></midi-visualizer>
+<div id="toolbar">
+  <button class="tb" id="edit-btn">Edit</button>
+  <button class="tb" id="erase-btn">Erase</button>
+  <button class="tb" id="dl-btn">Export MIDI</button>
+  <span id="hint"></span>
+  <div id="zoom"><button class="tb" id="zi">+</button><button class="tb" id="zo">-</button></div>
+</div>
+<div id="roll-wrap"><canvas id="rc"></canvas></div>
+<div id="tracks-legend"></div>
 <script>
+  window.__MIDI_URL__="{midi_url}";
   const orig=document.getElementById('orig'),midi=document.getElementById('midi');
   const START={start_offset:.3f};
-  // Show a live time/bar counter so audio and MIDI positions are easy to correlate.
-  const info=document.createElement('div');
-  info.style.cssText='font-size:11px;color:#6b7280;margin:2px 0 4px;font-family:monospace;';
-  document.getElementById('btns').after(info);
+  const info=document.getElementById('timeinfo');
   function fmt(s){{const m=Math.floor(s/60);return m+':'+(Math.floor(s%60)+'').padStart(2,'0');}}
   orig.addEventListener('timeupdate',()=>{{
     const t=Math.max(0,orig.currentTime-START);
     info.textContent='Audio '+fmt(orig.currentTime)+'  ·  Arrangement '+fmt(t);
   }});
-  document.getElementById('play-btn').onclick=()=>{{
-    orig.currentTime=START; orig.play(); midi.start();
-  }};
+  document.getElementById('play-btn').onclick=()=>{{orig.currentTime=START;orig.play();midi.start();}};
   document.getElementById('stop-btn').onclick=()=>{{orig.pause();midi.stop();}};
+  {_ROLL_JS}
 </script></body></html>""")
     player_url = f"http://127.0.0.1:{PREVIEW_PORT}/{player_fname}"
     return f'<iframe src="{player_url}" style="width:100%;height:310px;border:none;border-radius:8px;" loading="lazy"></iframe>'
@@ -700,26 +980,49 @@ def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> s
 
 def _make_variation_player(paths: list[str], stem_name: str, num_variations: int) -> str:
     """Multi-variation player for compose mode."""
-    parts = []
+    var_urls = []
     for i, vpath in enumerate(paths):
         mf  = Path(vpath).name
         mu  = f"http://127.0.0.1:{PREVIEW_PORT}/{mf}"
-        lbl = f"Variation {i+1}" if num_variations > 1 else "Composition"
-        parts.append(f"""
-<div style="margin-bottom:10px;border-top:1px solid #e5e7eb;padding-top:8px;">
-  <div style="font-weight:600;font-size:12px;color:#374151;margin-bottom:4px;">{lbl}</div>
-  <midi-player src="{mu}" sound-font></midi-player>
-  <midi-visualizer type="piano-roll" src="{mu}" style="height:90px;display:block;width:100%;border-radius:6px;margin-top:4px;"></midi-visualizer>
-</div>""")
+        var_urls.append(mu)
+    urls_js = str(var_urls).replace("'", '"')
+    labels  = [f"Variation {i+1}" if num_variations > 1 else "Composition" for i in range(len(paths))]
+    tabs_html = "".join(
+        f'<button class="tb vtab" onclick="selectVar({i})" id="vtab{i}">{lbl}</button>'
+        for i, lbl in enumerate(labels)
+    )
     player_fname = stem_name + "_player.html"
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
 <script src="https://cdn.jsdelivr.net/combine/npm/tone@14,npm/@magenta/music@1.23.1/es6/core.js,npm/html-midi-player@1.5.0"></script>
-<style>body{{margin:0;padding:8px;background:#f9fafb;font-family:sans-serif;font-size:12px;color:#374151;}}
-midi-player{{display:block;width:100%;}}</style></head>
-<body>{"".join(parts)}</body></html>""")
+<style>{_ROLL_CSS}
+  .vtab{{margin-right:3px;}} .vtab.on{{background:#0d2040;border-color:#3366aa;color:#77aaee;}}
+</style></head><body>
+<div id="toolbar" style="margin-bottom:5px;">{tabs_html}</div>
+<midi-player id="mp" sound-font></midi-player>
+<div id="toolbar">
+  <button class="tb" id="edit-btn">Edit</button>
+  <button class="tb" id="erase-btn">Erase</button>
+  <button class="tb" id="dl-btn">Export MIDI</button>
+  <span id="hint"></span>
+  <div id="zoom"><button class="tb" id="zi">+</button><button class="tb" id="zo">-</button></div>
+</div>
+<div id="roll-wrap"><canvas id="rc"></canvas></div>
+<div id="tracks-legend"></div>
+<script>
+  const URLS={urls_js};
+  window.__MIDI_URL__=URLS[0];
+  function selectVar(i){{
+    window.__MIDI_URL__=URLS[i];
+    document.getElementById('mp').src=URLS[i];
+    document.querySelectorAll('.vtab').forEach((b,j)=>b.classList.toggle('on',i===j));
+    if(window._rollReload) window._rollReload(URLS[i]);
+  }}
+  selectVar(0);
+  {_ROLL_JS.replace("window.addEventListener('load',", "window._rollReload=async function(u){{ window.__MIDI_URL__=u; await load(); }}; window.addEventListener('load',")}
+</script></body></html>""")
     player_url    = f"http://127.0.0.1:{PREVIEW_PORT}/{player_fname}"
-    iframe_height = min(700, 160 + len(paths) * 150)
+    iframe_height = min(600, 260 + max(0, len(paths) - 1) * 20)
     return f'<iframe src="{player_url}" style="width:100%;height:{iframe_height}px;border:none;border-radius:8px;" loading="lazy"></iframe>'
 
 
@@ -1310,7 +1613,7 @@ _TOOLTIP_JS = """
   var _activeOscs  = [];
   var _masterGain  = null, _bassGain = null, _chordGain = null, _drumGain = null;
   var _reverbNode  = null, _reverbSend = null;
-  var _melodyGain  = null;
+  var _melodyGain  = null, _ghostGain = null;
   var _noiseBuffer = null;
 
   function _makeReverb(ctx, decaySec, roomSize) {
@@ -1348,16 +1651,23 @@ _TOOLTIP_JS = """
     _reverbNode.connect(reverbOut); reverbOut.connect(_masterGain);
 
     _melodyGain = _audioCtx.createGain(); _melodyGain.gain.value = 0.0; // off by default
+    // Ghost Orchestra: dedicated bus
+    _ghostGain  = _audioCtx.createGain(); _ghostGain.gain.value  = 0.85;
+    window._ghostGain = _ghostGain;
     _bassGain.connect(_masterGain);
     _chordGain.connect(_masterGain);
     _drumGain.connect(_masterGain);
     _melodyGain.connect(_masterGain);
+    _ghostGain.connect(_masterGain);
     // Send each bus to reverb (bass gets less room — keeps it tight)
     var bassRevSend = _audioCtx.createGain(); bassRevSend.gain.value = 0.45;
     _bassGain.connect(bassRevSend); bassRevSend.connect(_reverbSend);
     _chordGain.connect(_reverbSend);
     _drumGain.connect(_reverbSend);
     _melodyGain.connect(_reverbSend);
+    // Ghost gets a heavy reverb send — it should feel distant/orchestral
+    var ghostRevSend = _audioCtx.createGain(); ghostRevSend.gain.value = 1.2;
+    _ghostGain.connect(ghostRevSend); ghostRevSend.connect(_reverbSend);
     _reverbSend.connect(_reverbNode);
 
     _masterGain.connect(_audioCtx.destination);
@@ -1646,10 +1956,12 @@ _TOOLTIP_JS = """
 
   // Chord instrument override (empty string = use style default)
   var _chordInstOverride = '';
-  window.setChordInstrument = function(v) { _chordInstOverride = v; };
+  window.setChordInstrument = function(v) { _chordInstOverride = v; window._chordInstOverride = v; };
+  window._chordInstOverride = '';
 
-  // Melody track
-  var _melodyGain = null, _melodyInst = 'piano2', _melodyVol = 0;
+
+  // Melody track (gain node created in _ensureGainNodes — do NOT redeclare here)
+  var _melodyInst = 'piano2', _melodyVol = 0;
   window.setMelodyVolume = function(v) {
     _melodyVol = parseFloat(v);
     if (_melodyGain) _melodyGain.gain.value = _melodyVol;
@@ -3470,6 +3782,7 @@ _TOOLTIP_JS = """
         disp.textContent = chord.symbol + '  (' + (chord.label.split('·')[0]||'').trim() + ')';
       }
     }
+
   }
 
   // ── Markov chord transitions ────────────────────────────────────────────────
@@ -3521,6 +3834,7 @@ _TOOLTIP_JS = """
     'Swing':        'Jazz Swing', 'New Soul':     'Ballad',
   };
   var _drumUserOverride = false;
+  window._setDrumUserOverride = function(v) { _drumUserOverride = v; };
 
   function _readLiveParams() {
     var bpm = parseFloat(document.getElementById('ctrl-bpm') && document.getElementById('ctrl-bpm').value) || 120;
@@ -3606,7 +3920,7 @@ _TOOLTIP_JS = """
     var rootPat = /^([A-G][b#]?)/;
     var m = sym.match(rootPat); if (!m) return [sym];
     var root = m[1]; var qual = sym.slice(root.length);
-    var rootPc = _NOTE_PC2[root]; if (rootPc === undefined) return [sym];
+    var rootPc = _NOTE_PC[root]; if (rootPc === undefined) return [sym];
     var intervals;
     if (qual==='')        intervals=[0,4,7];
     else if (qual==='m') intervals=[0,3,7];
@@ -3736,10 +4050,7 @@ _TOOLTIP_JS = """
     if (_audioCtx.state === 'suspended') _audioCtx.resume();
     _stopActive(); _ensureGainNodes();
     var chords = _readAccompChords();
-    if (!chords.length) {
-      // Auto-generate I-IV-V-I from current palette root/mode if nothing selected
-      chords = _autoChords();
-    }
+    if (!chords.length) chords = _autoChords();
     if (!chords.length) {
       var d = document.getElementById('accomp-now-playing');
       if (d) d.textContent = 'Select chords in the palette first.'; return;
@@ -3752,13 +4063,16 @@ _TOOLTIP_JS = """
     _accompState = { chords:chords, idx:Math.floor(Math.random()*chords.length),
       nextBarTime:_audioCtx.currentTime+0.08,
       bpb:lp.bpb, beatDur:lp.beatDur, barsPerChord:lp.barsPerChord, style:lp.style };
+    window._accompState = _accompState;
     _accompBeatsLeft = _accompState.barsPerChord * _accompState.bpb;
-    _accompRunning   = true;
+    _accompRunning   = true; window._accompRunning = true;
     _accompTick();
+    var d = document.getElementById('accomp-now-playing');
+    if (d) d.textContent = chords.map(function(c){return c.symbol;}).join(' · ');
   };
 
   window.stopAccompaniment = function() {
-    _accompRunning = false;
+    _accompRunning = false; window._accompRunning = false;
     if (_accompTimer) { clearTimeout(_accompTimer); _accompTimer = null; }
     _stopMidiClock();
     var d = document.getElementById('accomp-now-playing'); if (d) d.textContent = '—';
@@ -4239,6 +4553,252 @@ _TOOLTIP_JS = """
   };
 })();
 
+/* ── Crystallize & Ghost Orchestra — pure JS, zero server roundtrip ── */
+(function() {
+
+  // Map Live Recorder mode names → Composer key string suffix
+  var _MODE_STR = {
+    'Major (Ionian)':'major','Natural Minor (Aeolian)':'minor',
+    'Dorian':'dorian','Phrygian':'phrygian','Lydian':'lydian',
+    'Mixolydian':'mixolydian','Locrian':'locrian',
+    'Harmonic Minor':'harmonic minor','Melodic Minor':'melodic minor',
+    'Major Pentatonic':'major pentatonic','Minor Pentatonic':'minor pentatonic',
+    'Blues Scale':'blues','Whole Tone':'whole tone',
+    'Diminished (HW)':'diminished','Hungarian Minor':'hungarian minor',
+    'Phrygian Dominant':'phrygian dominant',
+  };
+
+  function _liveChords() {
+    var seq = window._seqOrder || [];
+    if (seq.length) return seq.join('  ');
+    var sel = window._selectedChords || {};
+    var keys = Object.keys(sel).filter(function(k){ return sel[k]; });
+    if (keys.length) return keys.join('  ');
+    var root = window._selRoot || 'C';
+    return root + 'maj7  ' + root + 'm7  ' + root + '7  ' + root + 'maj7';
+  }
+
+  function _liveBpm() {
+    var el = document.getElementById('ctrl-bpm');
+    return el ? parseFloat(el.value) || 120 : 120;
+  }
+
+  // ── CRYSTALLIZE ────────────────────────────────────────────────────────────
+  // Stores session data in localStorage, then navigates to Composer.
+  // ocNav reads localStorage on arrival and applies values via _applyComposerData.
+
+  window._crystallize = function(srcBtn) {
+    var root   = window._selRoot || 'C';
+    var mode   = window._selMode || 'Major (Ionian)';
+    var chords = _liveChords();
+    var key    = root + ' ' + (_MODE_STR[mode] || 'major');
+    var bpm    = _liveBpm();
+    try {
+      localStorage.setItem('oc_crystallize', JSON.stringify({chords:chords, key:key, bpm:bpm}));
+    } catch(e) {}
+    if (window.ocNav) window.ocNav('composer');
+    if (srcBtn) { srcBtn.disabled = false; srcBtn.classList.remove('loading'); }
+  };
+
+  // ── DESCRIBE ───────────────────────────────────────────────────────────────
+  // Translates the live session into a natural-language Composer brief.
+  // Unlike Crystallize (raw data), Describe builds a creative prompt the user
+  // can read, edit, and run — bridging improvisation and composition intent.
+
+  var _STYLE_MOOD = {
+    'Jazz':'swinging jazz','Gospel':'soulful gospel','Soul':'deep soul',
+    'R&B':'smooth R&B','Funk':'funky groove','Motown':'classic Motown',
+    'Ballad':'heartfelt ballad','Cinematic':'cinematic orchestral','Pop':'bright pop',
+    'Acoustic':'intimate acoustic','Bossa Nova':'bossa nova','Latin':'Afro-Latin',
+    'Reggae':'laid-back reggae','Blues':'slow blues','Lo-Fi':'lo-fi hip-hop',
+    'Country':'country folk','Disco Pop':'disco pop','Indie Pop':'indie pop',
+    'Neo Soul':'neo-soul','Worship':'worship anthemic','Pad':'atmospheric pad',
+    'Samba':'uptempo samba','Swing':'classic swing','Smooth Jazz':'smooth jazz',
+    'Tropical':'tropical groove','Funk Chop':'funk chop',
+    'Singer-Songwriter':'singer-songwriter','Honky Tonk':'honky-tonk',
+  };
+  var _TEMPO_WORD = [[50,'languid'],[68,'slow'],[84,'relaxed'],[100,'moderate'],
+                     [116,'mid-tempo'],[132,'brisk'],[148,'uptempo'],[999,'driving']];
+
+  window._describeSession = function(srcBtn) {
+    var root   = window._selRoot || 'C';
+    var mode   = window._selMode || 'Major (Ionian)';
+    var chords = _liveChords();
+    var bpm    = _liveBpm();
+    var style  = (document.getElementById('ctrl-style') && document.getElementById('ctrl-style').value) || 'Ballad';
+    var key    = root + ' ' + (_MODE_STR[mode] || 'major');
+
+    var tempoWord = 'moderate';
+    for (var i = 0; i < _TEMPO_WORD.length; i++) { if (bpm < _TEMPO_WORD[i][0]) { tempoWord = _TEMPO_WORD[i][1]; break; } }
+
+    var moodStr   = _STYLE_MOOD[style] || style.toLowerCase();
+    var modeShort = mode.replace(' (Ionian)','').replace(' (Aeolian)','');
+
+    var prompt = tempoWord + ' ' + moodStr + ' in ' + key + ' at ' + Math.round(bpm) + ' BPM. ' +
+      'Chord progression: ' + chords + '. ' +
+      'Orchestrate with rich ' + moodStr + ' textures — full arrangement.';
+
+    try {
+      localStorage.setItem('oc_describe', JSON.stringify({prompt:prompt, bpm:bpm, key:key, chords:chords}));
+    } catch(e) {}
+    if (window.ocNav) window.ocNav('composer');
+    if (srcBtn) { srcBtn.disabled = false; }
+  };
+
+  // ── GHOST ORCHESTRA ────────────────────────────────────────────────────────
+  // Additive orchestral layer that plays complementary voices UNDERNEATH the band.
+
+  var _ghostActive = false;
+  var _ghostTimer  = null;
+  var _ghostInst   = 'strings_ens';
+
+  // Note name → pitch class
+  var _GPC = {C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11};
+
+  // Self-contained string-pad synthesizer — uses raw Web Audio, no IIFE-1 dependency
+  function _ghostPlayPad(midi, t, dur, vel, ctx, dest) {
+    var freq = 440 * Math.pow(2, (midi - 69) / 12);
+    var master = ctx.createGain();
+    master.gain.setValueAtTime(0.001, t);
+    master.gain.linearRampToValueAtTime(vel, t + Math.min(0.28, dur * 0.3));
+    master.gain.setValueAtTime(vel,   t + Math.max(t + 0.01, t + dur - 0.20));
+    master.gain.linearRampToValueAtTime(0.001, t + dur);
+    master.connect(dest);
+    [-7, -3, 0, 3, 7].forEach(function(det) {
+      var osc = ctx.createOscillator();
+      osc.type = 'sawtooth';
+      osc.frequency.value = freq;
+      osc.detune.value = det;
+      osc.connect(master);
+      osc.start(Math.max(t, ctx.currentTime));
+      osc.stop(t + dur + 0.15);
+    });
+  }
+
+  function _ghostTick() {
+    if (!_ghostActive) return;
+    var ctx = window._audioCtx;
+    var st  = window._accompState;
+    if (!ctx || !st || !st.chords || !st.chords.length) {
+      _ghostTimer = setTimeout(_ghostTick, 120);
+      return;
+    }
+    var chord = st.chords[st.idx] || st.chords[0];
+    if (!chord || !chord.notes || !chord.notes.length) {
+      _ghostTimer = setTimeout(_ghostTick, 120);
+      return;
+    }
+    var dest   = window._ghostGain || window._masterGain || ctx.destination;
+    var barDur = st.bpb * st.beatDur;
+    var t      = ctx.currentTime + 0.06;
+    var rootPc = _GPC[chord.notes[0]];
+    if (rootPc === undefined) { _ghostTimer = setTimeout(_ghostTick, 120); return; }
+    var fifthPc = (rootPc + 7) % 12;
+    var inst    = _ghostInst;
+
+    if (inst === 'brass') {
+      _ghostPlayPad(24 + rootPc,  t,        Math.min(barDur * 0.55, 1.5), 0.22, ctx, dest);
+      _ghostPlayPad(36 + fifthPc, t + 0.06, Math.min(barDur * 0.45, 1.2), 0.14, ctx, dest);
+    } else if (inst === 'organ' || inst === 'piano2' || inst === 'rhodes') {
+      _ghostPlayPad(36 + rootPc,  t,        barDur * 1.06, 0.16, ctx, dest);
+      _ghostPlayPad(48 + fifthPc, t + 0.05, barDur * 1.06, 0.12, ctx, dest);
+    } else {
+      // strings_ens, vibes, acoustic, default — cello/viola/violin spread
+      _ghostPlayPad(36 + rootPc,  t,        barDur * 1.06, 0.20, ctx, dest);
+      _ghostPlayPad(48 + fifthPc, t + 0.08, barDur * 1.04, 0.15, ctx, dest);
+      _ghostPlayPad(60 + rootPc,  t + 0.16, barDur * 1.02, 0.10, ctx, dest);
+    }
+
+    // Re-fire just before the current bar ends so notes overlap seamlessly
+    _ghostTimer = setTimeout(_ghostTick, Math.max(80, (barDur - 0.15) * 1000));
+  }
+
+  // Ghost instrument + reverb room chosen per genre
+  var _GHOST_MAP = {
+    // Jazz → organ swell, medium hall
+    'Jazz':          {inst:'organ',       room:'md', rev:0.32, label:'Hammond organ · Medium hall'},
+    'Jazz Shell':    {inst:'organ',       room:'md', rev:0.32, label:'Hammond organ · Medium hall'},
+    'Brushed Trio':  {inst:'organ',       room:'md', rev:0.28, label:'Hammond organ · Studio room'},
+    'Rhodes Jazz':   {inst:'strings_ens', room:'md', rev:0.30, label:'String ensemble · Medium hall'},
+    'Vibraphone':    {inst:'strings_ens', room:'sm', rev:0.22, label:'String ensemble · Small room'},
+    'Swing':         {inst:'organ',       room:'md', rev:0.30, label:'Hammond organ · Medium hall'},
+    'Smooth Jazz':   {inst:'strings_ens', room:'md', rev:0.28, label:'String ensemble · Medium hall'},
+    // Soul / Gospel / Motown → organ pad
+    'Gospel':        {inst:'organ',       room:'lg', rev:0.45, label:'Gospel organ · Large hall'},
+    'Soul':          {inst:'organ',       room:'lg', rev:0.40, label:'Gospel organ · Large hall'},
+    'Motown':        {inst:'organ',       room:'md', rev:0.35, label:'Hammond organ · Medium hall'},
+    'Worship':       {inst:'organ',       room:'lg', rev:0.50, label:'Cathedral organ · Large hall'},
+    'Neo Soul':      {inst:'strings_ens', room:'md', rev:0.35, label:'Strings pad · Medium hall'},
+    'New Soul':      {inst:'strings_ens', room:'md', rev:0.35, label:'Strings pad · Medium hall'},
+    // R&B / Funk → brass stabs
+    'R&B':           {inst:'brass',       room:'md', rev:0.28, label:'Brass section · Medium hall'},
+    'Funk':          {inst:'brass',       room:'sm', rev:0.20, label:'Brass stabs · Small room'},
+    'Funk Chop':     {inst:'brass',       room:'sm', rev:0.18, label:'Brass stabs · Tight room'},
+    'Disco Pop':     {inst:'brass',       room:'md', rev:0.25, label:'Brass section · Medium hall'},
+    // Cinematic / Ballad / Pad → strings
+    'Cinematic':     {inst:'strings_ens', room:'lg', rev:0.50, label:'String ensemble · Large hall'},
+    'Ballad':        {inst:'strings_ens', room:'lg', rev:0.42, label:'String ensemble · Large hall'},
+    'Pad':           {inst:'strings_ens', room:'lg', rev:0.48, label:'String pad · Large hall'},
+    // Pop / Indie → piano2 with plate reverb
+    'Pop':           {inst:'piano2',      room:'pl', rev:0.30, label:'Grand piano · Plate reverb'},
+    'Indie Pop':     {inst:'piano2',      room:'pl', rev:0.28, label:'Grand piano · Plate reverb'},
+    'Singer-Songwriter':{inst:'acoustic', room:'sm', rev:0.22, label:'Acoustic guitar · Small room'},
+    // Country / Acoustic → acoustic guitar
+    'Acoustic':      {inst:'acoustic',    room:'sm', rev:0.20, label:'Acoustic guitar · Small room'},
+    'Country':       {inst:'acoustic',    room:'sm', rev:0.22, label:'Acoustic guitar · Small room'},
+    // Latin / World → vibes
+    'Bossa Nova':    {inst:'vibes',       room:'sm', rev:0.20, label:'Vibraphone · Small room'},
+    'Samba':         {inst:'vibes',       room:'sm', rev:0.18, label:'Vibraphone · Small room'},
+    'Latin':         {inst:'piano2',      room:'md', rev:0.25, label:'Piano · Medium hall'},
+    'Tropical':      {inst:'vibes',       room:'sm', rev:0.20, label:'Vibraphone · Small room'},
+    'Reggae':        {inst:'organ',       room:'sm', rev:0.22, label:'Organ · Small room'},
+    'Lo-Fi':         {inst:'strings_ens', room:'pl', rev:0.38, label:'Strings · Plate reverb'},
+  };
+  var _GHOST_DEFAULT = {inst:'strings_ens', room:'lg', rev:0.40, label:'String ensemble · Large hall'};
+
+  window._ghostOrchestra = function(srcBtn) {
+    var panel    = document.getElementById('ghost-result-panel');
+    var statusEl = document.getElementById('ghost-status');
+    var inner    = document.getElementById('ghost-result-inner');
+
+    if (_ghostActive) {
+      _ghostActive = false;
+      if (_ghostTimer) { clearTimeout(_ghostTimer); _ghostTimer = null; }
+      if (panel) panel.style.display = 'none';
+      if (srcBtn) {
+        srcBtn.querySelector('.bridge-btn-sub').textContent = 'Summon AI orchestra underneath';
+        srcBtn.classList.remove('ghost-active');
+      }
+      return;
+    }
+
+    var styleEl  = document.getElementById('ctrl-style');
+    var curStyle = styleEl ? styleEl.value : 'Ballad';
+    var ghost    = _GHOST_MAP[curStyle] || _GHOST_DEFAULT;
+    _ghostInst   = ghost.inst;
+    _ghostActive = true;
+
+    if (!window._accompRunning && window.startAccompaniment) window.startAccompaniment();
+    _ghostTick();
+
+    if (panel) panel.style.display = 'block';
+    if (inner) inner.innerHTML = '<div style="display:flex;gap:8px;align-items:center;padding:6px 0">'
+      + '<span style="font-size:11px;color:#7ab4ff">' + ghost.label + '</span></div>'
+      + '<div style="font-size:10px;color:#446688;margin-top:2px">Press again to stop</div>';
+    if (statusEl) statusEl.textContent = 'Ghost Orchestra live · ' + curStyle;
+    if (srcBtn) {
+      srcBtn.querySelector('.bridge-btn-sub').textContent = 'Press again to stop';
+      srcBtn.classList.add('ghost-active');
+    }
+  };
+
+  // Expose for CSS animation
+  var styleTag = document.createElement('style');
+  styleTag.textContent = '@keyframes ghost-pulse{0%,100%{opacity:0.3;transform:scale(0.85)}50%{opacity:1;transform:scale(1.15)}} .ghost-btn.ghost-active{background:linear-gradient(135deg,#0d1a30 0%,#162540 100%)!important;border-color:#5599ff!important;}';
+  document.head.appendChild(styleTag);
+
+})();
+
 /* ── Custom palette picker ── */
 (function(){
   var NOTES = [
@@ -4549,6 +5109,60 @@ function studioShowTab(tab) {
   function _show(id){ var el=document.getElementById(id); if(el) el.style.display=''; }
   function _hide(id){ var el=document.getElementById(id); if(el) el.style.display='none'; }
 
+  // Gradio Svelte dispatch — the only reliable way to set component values
+  function _gradioSet(el, value) {
+    if (!el) return;
+    // Try Svelte internal dispatch first
+    if (el.__svelte_meta || el._svelte_component) {
+      try { el.dispatchEvent(new CustomEvent('change', {detail: value, bubbles: true})); } catch(e){}
+    }
+    // Then native setter + synthetic events
+    var input = el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' ? el
+      : el.querySelector('input, textarea');
+    if (!input) return;
+    var proto = input.tagName === 'TEXTAREA' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+    var setter = Object.getOwnPropertyDescriptor(proto, 'value');
+    if (setter && setter.set) setter.set.call(input, value);
+    ['input','change','blur'].forEach(function(ev) {
+      input.dispatchEvent(new Event(ev, {bubbles:true}));
+    });
+  }
+
+  function _applyComposerData(data) {
+    if (!data) return;
+    // Chord input: find by placeholder
+    var chordEl = document.querySelector(
+      'textarea[placeholder*="Dm7"], input[placeholder*="Dm7"]');
+    if (chordEl) _gradioSet(chordEl, data.chords);
+
+    // Key textbox: find by placeholder
+    var keyEl = document.querySelector(
+      'input[placeholder*="C major"], textarea[placeholder*="C major"]');
+    if (keyEl) _gradioSet(keyEl, data.key);
+
+    // BPM: find slider with min=40 max=240 inside section-composer
+    var bpmEl = document.querySelector(
+      '#section-composer input[type=range][min="40"], #section-composer input[type=range][min="40.0"]');
+    if (!bpmEl) bpmEl = document.querySelector('input[type=range][min="40"][max="240"]');
+    if (bpmEl) {
+      var setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value');
+      if (setter && setter.set) setter.set.call(bpmEl, data.bpm);
+      ['input','change'].forEach(function(ev){ bpmEl.dispatchEvent(new Event(ev,{bubbles:true})); });
+    }
+
+    // Key mode radio: click "Manual"
+    document.querySelectorAll('#section-composer input[type=radio]').forEach(function(r){
+      var lbl = r.closest('label');
+      if (lbl && lbl.textContent.trim() === 'Manual' && !r.checked) r.click();
+    });
+
+    // Melody source: click "Harmony only"
+    document.querySelectorAll('#section-composer input[type=radio]').forEach(function(r){
+      var lbl = r.closest('label');
+      if (lbl && lbl.textContent.trim() === 'Harmony only' && !r.checked) r.click();
+    });
+  }
+
   window.ocNav = function(section) {
     _hide('home-screen');
     if(section==='live'){
@@ -4557,6 +5171,23 @@ function studioShowTab(tab) {
     } else {
       _hide('section-live');
       _show('section-composer');
+      // Apply any pending Crystallize data
+      try {
+        var raw = localStorage.getItem('oc_crystallize');
+        if (raw) {
+          var data = JSON.parse(raw);
+          localStorage.removeItem('oc_crystallize');
+          setTimeout(function(){
+            _applyComposerData(data);
+            // Auto-click Generate Arrangement after fields are filled
+            setTimeout(function(){
+              var genBtn = document.querySelector('#generate-btn-wrap button.primary');
+              if (!genBtn) genBtn = document.querySelector('#generate-btn-wrap button');
+              if (genBtn) genBtn.click();
+            }, 300);
+          }, 120);
+        }
+      } catch(e){}
     }
     window._ocActiveSection = section;
   };
@@ -5485,6 +6116,40 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 }
 .lst-btn:hover:not(.active) { color: var(--text-bright); filter: brightness(1.15); }
 
+/* ── Bridge buttons: Crystallize & Ghost Orchestra ── */
+.bridge-btn {
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 1px; padding: 10px 14px; border-radius: 8px; cursor: pointer;
+  border: 1px solid; font-family: var(--font-ui); transition: all 0.18s ease;
+  min-width: 160px; flex: 1;
+}
+.bridge-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.bridge-btn.loading { animation: bridge-pulse 1.2s ease-in-out infinite; }
+@keyframes bridge-pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+.bridge-btn-icon { font-size: 18px; line-height: 1; margin-bottom: 2px; }
+.bridge-btn-label { font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.bridge-btn-sub { font-size: 9px; font-weight: 400; opacity: 0.65; letter-spacing: .03em; }
+
+/* Crystallize — warm gold/amber */
+.crystallize-btn {
+  background: linear-gradient(135deg, #1a1200 0%, #2a1e00 100%);
+  border-color: #6b4f00; color: #f0c040;
+}
+.crystallize-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #2a1e00 0%, #3a2c00 100%);
+  border-color: #c89a20; box-shadow: 0 0 14px rgba(200,150,0,0.25);
+}
+
+/* Ghost Orchestra — electric blue/violet */
+.ghost-btn {
+  background: linear-gradient(135deg, #080e1a 0%, #0d1528 100%);
+  border-color: #1e3a6a; color: #7ab4ff;
+}
+.ghost-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #0d1528 0%, #122040 100%);
+  border-color: #4a7fd8; box-shadow: 0 0 14px rgba(80,140,255,0.25);
+}
+
 /* ═══════════════════════════════════════════════
    COMPOSER STUDIO ZONE
    ═══════════════════════════════════════════════ */
@@ -6014,7 +6679,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
               <button class="dens-btn" data-v="3" onclick="window._setDens('drum',3,this)">Dense</button>
             </div>
             <select id="drum-pattern-sel" class="mix-density" style="margin-top:4px"
-              onchange="window._drumUserOverride=true;window.setDrumPattern&&window.setDrumPattern(this.value)">
+              onchange="window._setDrumUserOverride&&window._setDrumUserOverride(true);window.setDrumPattern&&window.setDrumPattern(this.value)">
               <optgroup label="Soft"><option>Ballad</option></optgroup>
               <optgroup label="Rock">
                 <option selected>Rock Basic</option><option>Rock Groove</option><option>Rock Heavy</option>
@@ -6096,6 +6761,43 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
           <div id="loop-status" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--amber);min-height:16px">Ready — press ⏺ on any slot to record</div>
         </div>
 
+        <!-- ── Bridge buttons ── -->
+        <div id="bridge-btns" style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
+          <button id="crystallize-btn" class="bridge-btn crystallize-btn"
+            onclick="window._crystallize && window._crystallize(this)">
+            <span class="bridge-btn-icon">✦</span>
+            <span class="bridge-btn-label">Crystallize</span>
+            <span class="bridge-btn-sub">Send session → Composer &amp; generate</span>
+          </button>
+          <button id="ghost-orch-btn" class="bridge-btn ghost-btn"
+            onclick="window._ghostOrchestra && window._ghostOrchestra(this)">
+            <span class="bridge-btn-icon">👻</span>
+            <span class="bridge-btn-label">Ghost Orchestra</span>
+            <span class="bridge-btn-sub">Summon AI orchestra underneath</span>
+          </button>
+        </div>
+        <!-- Ghost Orchestra result panel — hidden until generation completes -->
+        <div id="ghost-result-panel" style="display:none;margin-top:10px;border:1px solid #2a3a5a;border-radius:8px;padding:10px;background:#0a0e1a">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+            <span style="font-size:11px;font-weight:700;color:#5599ff;letter-spacing:.08em;text-transform:uppercase">Ghost Orchestra</span>
+            <button onclick="document.getElementById('ghost-result-panel').style.display='none'"
+              style="background:none;border:none;color:#555;cursor:pointer;font-size:14px">✕</button>
+          </div>
+          <div id="ghost-result-inner"></div>
+          <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+            <span style="font-size:10px;color:#446688;min-width:36px">Vol</span>
+            <input type="range" id="ghost-vol-slider" min="0" max="1" step="0.01" value="0.85"
+              style="flex:1;accent-color:#5599ff;cursor:pointer"
+              oninput="
+                var g = window._ghostGain;
+                if (g) g.gain.value = parseFloat(this.value);
+                document.getElementById('ghost-vol-val').textContent = Math.round(this.value*100)+'%';
+              ">
+            <span id="ghost-vol-val" style="font-size:10px;color:#7ab4ff;min-width:32px;text-align:right">85%</span>
+          </div>
+          <div id="ghost-status" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--amber);margin-top:4px"></div>
+        </div>
+
         <div class="lc-section-title" style="margin-top:14px">🎧&nbsp; Listen In</div>
         <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
           <div style="display:flex;gap:6px">
@@ -6118,6 +6820,16 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     """)
     
 
+
+    # ── Bridge: Live Recorder → Composer ─────────────────────────────────────
+    # Hidden textboxes receive JSON payloads from JS; hidden buttons trigger Python bridges
+    with gr.Group(visible=False, elem_id="bridge-hidden"):
+        _crystallize_payload = gr.Textbox(value="", interactive=True, visible=False, elem_id="crystallize-payload")
+        _crystallize_trigger = gr.Button("crystallize-trigger", visible=False, elem_id="crystallize-trigger")
+        _ghost_payload       = gr.Textbox(value="", interactive=True, visible=False, elem_id="ghost-payload")
+        _ghost_trigger       = gr.Button("ghost-trigger",       visible=False, elem_id="ghost-trigger")
+        # Ghost result panel — receives the MIDI player HTML
+        ghost_result_out     = gr.HTML(value="", visible=False, elem_id="ghost-result-out")
 
     # ── ORCHESTRAL COMPOSER SECTION ───────────────────────────────────────────
     with gr.Group(elem_id="section-composer"):
