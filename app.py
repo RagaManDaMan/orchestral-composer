@@ -76,7 +76,7 @@ from src.korvai_engine import (
     GATI_OPTIONS, MATRA_OPTIONS,
 )
 
-# Indian audio engine — loads lazily so missing samples don't block startup
+# Indian audio engine -- loads lazily so missing samples don't block startup
 try:
     from src.raga_engine import is_indian_preset, get_raga_for_key, generate_raga_melody
     from src.indian_audio_engine import render_indian_audio, setup_sample_folders
@@ -120,7 +120,7 @@ MODES.update(_custom_modes_store)
 _MODE_NAMES = sorted(MODES.keys())
 
 # ---------------------------------------------------------------------------
-# Module-level context — shared with reharmonize
+# Module-level context -- shared with reharmonize
 def _write_section_midis(
     orchestration: dict,
     section_map: list[dict],
@@ -236,7 +236,7 @@ def generate_palette(root, mode_name, custom_intervals, beats_per_chord):
             label = mode_name if mode_name in MODES else "custom"
 
         seen: set[str] = set()
-        # (display_label, value) tuples — value is the plain symbol passed downstream
+        # (display_label, value) tuples -- value is the plain symbol passed downstream
         all_choices: list[tuple[str, str]] = []
         for c in chords:
             if c.symbol not in seen:
@@ -370,7 +370,7 @@ def preview_mode_notes(root: str, intervals_str: str) -> str:
         notes = _notes_for_root(root, ivs)
         return f"**{root}: {' – '.join(notes)}**  ({len(ivs)} notes)"
     except Exception:
-        return "_Invalid intervals — use space-separated integers 0–11_"
+        return "_Invalid intervals -- use space-separated integers 0–11_"
 
 def save_mode(mode_name: str, intervals_str: str):
     mode_name = mode_name.strip()
@@ -379,7 +379,7 @@ def save_mode(mode_name: str, intervals_str: str):
     try:
         ivs = _parse_intervals(intervals_str)
     except ValueError:
-        return gr.update(), "⚠ Invalid intervals — use space-separated integers 0–11."
+        return gr.update(), "⚠ Invalid intervals -- use space-separated integers 0–11."
     if len(ivs) < 3:
         return gr.update(), "⚠ Need at least 3 intervals."
     if not all(0 <= i <= 11 for i in ivs):
@@ -634,7 +634,7 @@ def _build_chord_timeline(
                 chord_timeline.append((beat, override))
                 chord_timeline.sort(key=lambda x: x[0])
         undefined = [l for l in set(form) if l not in section_chords and l not in _k_defs]
-        val_warn = (f"\n  ⚠ Undefined: {', '.join(sorted(undefined))} — add to section table or korvai slot"
+        val_warn = (f"\n  ⚠ Undefined: {', '.join(sorted(undefined))} -- add to section table or korvai slot"
                     if undefined else "")
         summary = f"  Form: {' → '.join(form)}{val_warn}\n" + "".join(
             f"  {l} ({bars_per_sec[l]} bars): {' '.join(section_chords[l])}\n"
@@ -681,221 +681,480 @@ def _build_chord_timeline(
 
 
 _ROLL_CSS = """
-  *{box-sizing:border-box;}
-  body{margin:0;padding:6px;background:#080e18;font-family:'JetBrains Mono',monospace;font-size:11px;color:#99aabb;}
-  midi-player{display:block;width:100%;margin-bottom:4px;}
-  #toolbar{display:flex;gap:6px;align-items:center;margin-bottom:5px;flex-wrap:wrap;}
-  .tb{padding:3px 10px;border:1px solid #1e2a3a;border-radius:3px;background:#0d1520;color:#7799bb;cursor:pointer;font-size:10px;font-family:inherit;}
-  .tb:hover{background:#162030;color:#aaccff;}
-  .tb.on{background:#0d2040;border-color:#3366aa;color:#77aaee;}
-  #zoom{display:flex;gap:4px;align-items:center;margin-left:auto;}
-  #hint{font-size:9px;color:#334455;margin-left:6px;}
-  #roll-wrap{overflow:auto;border:1px solid #111c28;border-radius:3px;cursor:crosshair;}
+  *{box-sizing:border-box;margin:0;padding:0;}
+  body{background:#0a0d12;font-family:'Segoe UI',system-ui,sans-serif;font-size:11px;color:#8899aa;user-select:none;}
+  midi-player{display:block;width:100%;margin-bottom:6px;}
+  #toolbar{display:flex;gap:4px;align-items:center;padding:5px 6px;background:#0d1018;border-bottom:1px solid #1a2030;flex-wrap:wrap;}
+  .tb{padding:4px 11px;border:1px solid #1e2a3a;border-radius:4px;background:#141c28;color:#6688aa;cursor:pointer;font-size:10px;font-family:inherit;transition:all .12s;}
+  .tb:hover{background:#1a2538;color:#99ccff;border-color:#2a3a50;}
+  .tb.on{background:#1a3a6a;border-color:#4477cc;color:#88bbff;box-shadow:0 0 6px #2255aa44;}
+  .tb-sep{width:1px;height:18px;background:#1a2030;margin:0 3px;}
+  #hint{font-size:9px;color:#2a3a4a;margin-left:4px;flex:1;}
+  #snap-label{font-size:9px;color:#445566;margin-right:2px;}
+  #roll-area{display:flex;flex-direction:column;border:1px solid #131b26;border-radius:4px;overflow:hidden;}
+  #roll-wrap{overflow:auto;cursor:default;flex:1;position:relative;}
+  #roll-wrap.draw{cursor:crosshair;}
+  #roll-wrap.erase{cursor:cell;}
   canvas{display:block;}
-  #tracks-legend{display:flex;gap:8px;flex-wrap:wrap;margin-top:4px;font-size:9px;}
-  .track-dot{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:3px;}
+  #vel-wrap{height:52px;overflow:hidden;border-top:1px solid #0f1820;background:#07090f;position:relative;}
+  #vel-cv{display:block;}
+  #vel-label{position:absolute;left:4px;top:3px;font-size:8px;color:#223344;pointer-events:none;}
+  #tracks-legend{display:flex;gap:10px;flex-wrap:wrap;padding:4px 6px;font-size:9px;background:#090d14;border-top:1px solid #0f1820;}
+  .track-dot{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:3px;vertical-align:middle;}
 """
 
 _ROLL_JS = r"""
 (function(){
-  const MIDI_URL = window.__MIDI_URL__;
-  const NOTE_H = 9, KEY_W = 32, PX_SEC = 80;
+  /* -- constants -- */
+  const NOTE_H=12, KEY_W=44, VEL_H=48;
+  const SNAP_VALS=[0.0625,0.125,0.25,0.5,1.0]; // 1/16 1/8 1/4 1/2 1
+  const SNAP_LABELS=['1/16','1/8','1/4','1/2','1'];
+  const BLACK_PCS=[1,3,6,8,10];
+  const NOTE_NAMES=['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+  const TRACK_COLS=['#3d85f5','#f5523d','#2dc98a','#c93df5','#f5a623','#23dfc9','#f523a3','#a3c923'];
+
+  /* -- state -- */
   let notes=[], totalTime=0, bpm=120, ns=null;
-  let editOn=false, tool='draw'; // tool: draw | erase
-  let drawing=null; // {pitch,startTime,startX,startY}
-  let zoom=1.0;
-  let minP=21, maxP=108;
+  let zoom=1.5, pxSec=80;
+  let snapIdx=2; // default 1/4
+  let tool='draw'; // draw | erase | select
+  let drawing=null, selNote=null, resizing=null;
+  let minP=36, maxP=84;
+  let velDrag=null;
+  let MIDI_URL=window.__MIDI_URL__;
 
-  const COLORS=['#4488ff','#ff6644','#44cc88','#cc44ff','#ffaa22','#22ddcc','#ff4488','#aacc44'];
+  /* -- helpers -- */
+  function snapTime(t){
+    const spb=60/bpm, grid=SNAP_VALS[snapIdx]*spb;
+    return Math.round(t/grid)*grid;
+  }
+  function tToX(t){ return KEY_W + t*pxSec*zoom; }
+  function xToT(x){ return (x-KEY_W)/(pxSec*zoom); }
+  function pToY(p){ return (maxP-p)*NOTE_H; }
+  function yToP(y){ return maxP - Math.floor(y/NOTE_H); }
+  function noteColor(n){ return TRACK_COLS[(n.program||n.instrument||0)%TRACK_COLS.length]; }
 
-  async function load(){
-    try{
-      const r=await fetch(MIDI_URL);
-      const blob=await r.blob();
-      ns=await mm.midi.blobToNoteSequence(blob);
-      notes=ns.notes.map(n=>({pitch:n.pitch,startTime:n.startTime,endTime:n.endTime,
-        velocity:n.velocity||80,instrument:n.instrument||0,program:n.program||0}));
-      totalTime=ns.totalTime||4;
-      if(ns.tempos&&ns.tempos.length) bpm=ns.tempos[0].qpm;
-      const ps=notes.map(n=>n.pitch);
-      minP=Math.max(0,Math.min(...ps)-3);
-      maxP=Math.min(127,Math.max(...ps)+3);
-      buildLegend();
-      render();
-    }catch(e){console.error('roll load:',e);}
+  /* -- canvas event coords (correct for scroll) -- */
+  function evXY(e, cv){
+    const r=cv.getBoundingClientRect();
+    const wrap=document.getElementById('roll-wrap');
+    return { x: e.clientX - r.left + wrap.scrollLeft,
+             y: e.clientY - r.top  + wrap.scrollTop };
   }
 
+  /* -- status helper -- */
+  function setStatus(msg, col){
+    const el=document.getElementById('roll-status');
+    if(el){ el.textContent=msg; el.style.color=col||'#5577aa'; }
+  }
+
+  /* -- MIDI load (uses @tonejs/midi -- tiny, fast) -- */
+  async function load(url){
+    if(url) MIDI_URL=url;
+    if(!MIDI_URL){ setStatus('No MIDI URL','#cc4444'); return; }
+    setStatus('Loading...','#557799');
+    try{
+      const resp=await fetch(MIDI_URL);
+      if(!resp.ok){ setStatus('Fetch failed: '+resp.status,'#cc4444'); return; }
+      const buf=await resp.arrayBuffer();
+      const midi=new Midi(buf);
+      notes=[];
+      midi.tracks.forEach((track,ti)=>{
+        const prog=track.instrument?track.instrument.number:0;
+        track.notes.forEach(n=>{
+          notes.push({
+            pitch:n.midi, startTime:n.time, endTime:n.time+n.duration,
+            velocity:Math.round(n.velocity*127)||80,
+            instrument:ti, program:prog
+          });
+        });
+      });
+      notes.sort((a,b)=>a.startTime-b.startTime);
+      totalTime=midi.duration||4;
+      bpm=midi.header.tempos&&midi.header.tempos.length ? midi.header.tempos[0].bpm : 120;
+      if(notes.length){
+        const ps=notes.map(n=>n.pitch);
+        minP=Math.max(0,  Math.min(...ps)-3);
+        maxP=Math.min(127,Math.max(...ps)+3);
+      }
+      setStatus(notes.length+' notes  |  BPM '+Math.round(bpm)+'  |  Draw = add  Right-click = delete','#44aa66');
+      buildLegend();
+      render(); renderVel();
+    }catch(e){
+      setStatus('Error: '+e.message,'#cc4444');
+      console.error('roll load:',e);
+    }
+  }
+
+  /* -- simple MIDI export (no Magenta needed) -- */
+  function writeMidi(noteList, bpmVal){
+    const tpq=480;
+    const uspb=Math.round(60000000/bpmVal);
+    function varlen(n){
+      if(n<128) return [n];
+      const out=[];
+      out.unshift(n&0x7f); n>>=7;
+      while(n>0){out.unshift((n&0x7f)|0x80);n>>=7;}
+      return out;
+    }
+    // group by instrument/channel
+    const tracks={};
+    noteList.forEach(n=>{
+      const ch=n.instrument%16;
+      if(!tracks[ch]) tracks[ch]=[];
+      tracks[ch].push(n);
+    });
+    const trackChunks=[];
+    // tempo track
+    const tempoEvt=[0,0xFF,0x51,0x03,(uspb>>16)&0xFF,(uspb>>8)&0xFF,uspb&0xFF,0,0xFF,0x2F,0];
+    const tData=new Uint8Array(tempoEvt);
+    const tLen=[(tData.length>>24)&0xFF,(tData.length>>16)&0xFF,(tData.length>>8)&0xFF,tData.length&0xFF];
+    trackChunks.push([0x4D,0x54,0x72,0x6B,...tLen,...tData]);
+    // note tracks
+    Object.keys(tracks).forEach(ch=>{
+      const ch_=parseInt(ch);
+      const evts=[];
+      tracks[ch_].sort((a,b)=>a.startTime-b.startTime);
+      tracks[ch_].forEach(n=>{
+        const t0=Math.round(n.startTime*tpq*bpmVal/60);
+        const t1=Math.round(n.endTime*tpq*bpmVal/60);
+        evts.push({t:t0,d:[0x90|ch_,n.pitch,n.velocity||80]});
+        evts.push({t:t1,d:[0x80|ch_,n.pitch,0]});
+      });
+      evts.sort((a,b)=>a.t-b.t);
+      let prev=0; const raw=[];
+      evts.forEach(ev=>{
+        raw.push(...varlen(ev.t-prev)); prev=ev.t;
+        raw.push(...ev.d);
+      });
+      raw.push(0,0xFF,0x2F,0);
+      const len=[(raw.length>>24)&0xFF,(raw.length>>16)&0xFF,(raw.length>>8)&0xFF,raw.length&0xFF];
+      trackChunks.push([0x4D,0x54,0x72,0x6B,...len,...raw]);
+    });
+    // header
+    const numTracks=trackChunks.length;
+    const header=[0x4D,0x54,0x68,0x64,0,0,0,6,0,1,(numTracks>>8)&0xFF,numTracks&0xFF,(tpq>>8)&0xFF,tpq&0xFF];
+    const all=[...header,...trackChunks.flat()];
+    return new Uint8Array(all);
+  }
+
+  /* -- main render -- */
   function render(){
     const cv=document.getElementById('rc');
-    if(!cv)return;
+    if(!cv) return;
     const ctx=cv.getContext('2d');
-    const numP=maxP-minP+1;
-    const W=Math.max(500,Math.round((totalTime*PX_SEC*zoom)+KEY_W+16));
-    const H=numP*NOTE_H;
-    cv.width=W; cv.height=H;
-    cv.style.width=W+'px'; cv.style.height=H+'px';
+    const rows=maxP-minP+1;
+    const W=Math.max(600, Math.ceil(tToX(totalTime))+60);
+    const H=rows*NOTE_H;
+    if(cv.width!==W||cv.height!==H){ cv.width=W; cv.height=H; }
 
-    // Background rows
-    for(let p=minP;p<=maxP;p++){
-      const y=(maxP-p)*NOTE_H;
-      const pc=p%12, isB=[1,3,6,8,10].includes(pc);
-      ctx.fillStyle=isB?'#07090f':'#0b1018';
-      ctx.fillRect(KEY_W,y,W-KEY_W,NOTE_H);
-      // Key label
-      ctx.fillStyle=isB?'#111820':'#141e28';
-      ctx.fillRect(0,y,KEY_W,NOTE_H);
+    /* rows + piano keys */
+    for(let p=minP; p<=maxP; p++){
+      const y=pToY(p), pc=p%12, isB=BLACK_PCS.includes(pc);
+      /* grid row */
+      ctx.fillStyle=isB ? '#080c12' : '#0d1220';
+      ctx.fillRect(KEY_W, y, W-KEY_W, NOTE_H);
+      /* C marker row */
       if(pc===0){
-        ctx.fillStyle='#1a2838';
-        ctx.fillRect(KEY_W,y,W-KEY_W,1);
-        ctx.fillStyle='#445566';
-        ctx.font='7px monospace';
-        ctx.fillText('C'+(Math.floor(p/12)-1),2,y+NOTE_H-2);
+        ctx.fillStyle='#131f30'; ctx.fillRect(KEY_W,y,W-KEY_W,1);
       }
-      if(pc===5){ctx.fillStyle='#0f1820';ctx.fillRect(KEY_W,y,W-KEY_W,1);}
+      /* piano key */
+      ctx.fillStyle=isB ? '#181c24' : '#2a3848';
+      ctx.fillRect(0, y, KEY_W, NOTE_H);
+      if(isB){
+        ctx.fillStyle='#0e1018';
+        ctx.fillRect(0, y, KEY_W*0.65, NOTE_H);
+      }
+      if(pc===0){
+        ctx.fillStyle='#6699bb'; ctx.font='bold 8px sans-serif';
+        ctx.fillText('C'+(Math.floor(p/12)-1), 2, y+NOTE_H-2);
+      } else if(pc===5){
+        ctx.fillStyle='#3a5566'; ctx.font='7px sans-serif';
+        ctx.fillText('F'+(Math.floor(p/12)-1), 2, y+NOTE_H-2);
+      }
+      /* key border */
+      ctx.fillStyle='#0d1520';
+      ctx.fillRect(0, y+NOTE_H-1, KEY_W, 1);
     }
 
-    // Beat grid
+    /* beat/bar grid */
     const spb=60/bpm;
-    for(let t=0;t<=totalTime+spb;t+=spb){
-      const x=KEY_W+t*PX_SEC*zoom;
-      const beat=Math.round(t/spb);
-      ctx.fillStyle=beat%4===0?'#1a3050':'#101820';
-      ctx.fillRect(x,0,beat%4===0?2:1,H);
-      if(beat%4===0){
-        ctx.fillStyle='#2a4060';
-        ctx.font='7px monospace';
-        ctx.fillText('B'+(beat+1),x+2,H-2);
+    const totalBeats=Math.ceil(totalTime/spb)+2;
+    for(let b=0; b<=totalBeats; b++){
+      const x=tToX(b*spb);
+      const isBar=b%4===0;
+      ctx.fillStyle=isBar ? '#1c3050' : '#0e1825';
+      ctx.fillRect(x, 0, isBar?2:1, H);
+      if(isBar){
+        ctx.fillStyle='#2a4a70'; ctx.font='8px sans-serif';
+        ctx.fillText('Bar '+(b/4+1), x+3, 9);
       }
     }
 
-    // Notes
+    /* sub-grid (snap lines) */
+    const spbSnap=(60/bpm)*SNAP_VALS[snapIdx];
+    if(spbSnap < spb){
+      const steps=Math.ceil(totalTime/spbSnap)+2;
+      ctx.fillStyle='#0a1018';
+      for(let s=0;s<=steps;s++){
+        const x=tToX(s*spbSnap);
+        if(Math.abs(x-tToX(Math.round(s*spbSnap/spb)*spb))<1) continue;
+        ctx.fillRect(x,0,1,H);
+      }
+    }
+
+    /* notes */
     notes.forEach(n=>{
-      const x=KEY_W+n.startTime*PX_SEC*zoom;
-      const w=Math.max(3,(n.endTime-n.startTime)*PX_SEC*zoom-1);
-      const y=(maxP-n.pitch)*NOTE_H+1;
-      const h=NOTE_H-2;
-      const col=COLORS[(n.instrument||n.program||0)%COLORS.length];
-      const v=(n.velocity||80)/127;
-      ctx.globalAlpha=0.55+v*0.45;
+      const x=tToX(n.startTime);
+      const w=Math.max(4,(n.endTime-n.startTime)*pxSec*zoom-1);
+      const y=pToY(n.pitch)+1, h=NOTE_H-2;
+      const col=noteColor(n);
+      /* main body */
+      ctx.globalAlpha=1;
       ctx.fillStyle=col;
       ctx.fillRect(x,y,w,h);
-      ctx.globalAlpha=1;
-      ctx.fillStyle='rgba(255,255,255,0.25)';
+      /* bright top sheen */
+      ctx.fillStyle='rgba(255,255,255,0.45)';
       ctx.fillRect(x,y,w,2);
+      /* right resize grip */
+      ctx.fillStyle='rgba(255,255,255,0.5)';
+      ctx.fillRect(x+w-4,y+2,3,h-4);
+      /* selected outline */
+      if(n===selNote){
+        ctx.strokeStyle='#ffffff'; ctx.lineWidth=1.5;
+        ctx.strokeRect(x+0.5,y+0.5,w-1,h-1);
+      }
+    });
+
+    /* ghost note while drawing */
+    if(drawing){
+      const x=tToX(drawing.startTime);
+      const w=Math.max(4,tToX(drawing.endTime)-x);
+      const y=pToY(drawing.pitch)+1;
+      ctx.fillStyle='rgba(120,190,255,0.6)';
+      ctx.fillRect(x,y,w,NOTE_H-2);
+    }
+  }
+
+  /* -- velocity lane -- */
+  function renderVel(){
+    const cv=document.getElementById('vel-cv');
+    if(!cv) return;
+    const W=document.getElementById('rc').width||600;
+    cv.width=W; cv.height=VEL_H;
+    const ctx=cv.getContext('2d');
+    ctx.fillStyle='#07090f';
+    ctx.fillRect(0,0,W,VEL_H);
+    notes.forEach(n=>{
+      const x=tToX(n.startTime);
+      const h=Math.round((n.velocity/127)*(VEL_H-4));
+      const col=noteColor(n);
+      ctx.fillStyle=col+'99';
+      ctx.fillRect(x, VEL_H-h, 4, h);
+      /* stem */
+      ctx.fillStyle=col;
+      ctx.fillRect(x, VEL_H-h, 4, 2);
     });
   }
 
-  function xyToNoteTime(ev){
-    const cv=document.getElementById('rc');
-    const wrap=document.getElementById('roll-wrap');
-    const rect=cv.getBoundingClientRect();
-    const sx=ev.clientX-rect.left+wrap.scrollLeft;
-    const sy=ev.clientY-rect.top+wrap.scrollTop;
-    const pitch=maxP-Math.floor(sy/NOTE_H);
-    const time=(sx-KEY_W)/(PX_SEC*zoom);
-    return{pitch,time,x:sx,y:sy};
+  /* -- hit test -- */
+  function hitNote(x, y){
+    for(let i=notes.length-1;i>=0;i--){
+      const n=notes[i];
+      const nx=tToX(n.startTime), nw=Math.max(3,(n.endTime-n.startTime)*pxSec*zoom-1);
+      const ny=pToY(n.pitch)+1, nh=NOTE_H-2;
+      if(x>=nx&&x<=nx+nw&&y>=ny&&y<=ny+nh) return {note:n,handle:x>nx+nw-6};
+    }
+    return null;
   }
 
+  /* -- mouse -- */
   function setupMouse(){
     const cv=document.getElementById('rc');
     const wrap=document.getElementById('roll-wrap');
-    if(!cv)return;
+    if(!cv) return;
+
+    cv.addEventListener('contextmenu',e=>e.preventDefault());
 
     cv.addEventListener('mousedown',e=>{
-      if(!editOn)return;
       e.preventDefault();
-      const{pitch,time,x,y}=xyToNoteTime(e);
-      if(pitch<0||pitch>127||time<0)return;
+      const {x,y}=evXY(e,cv);
+      const pitch=yToP(y), time=xToT(x);
+      if(pitch<0||pitch>127) return;
 
-      if(tool==='erase'||(e.button===2)){
-        // delete note under cursor
-        const idx=notes.findIndex(n=>
-          pitch===n.pitch && time>=n.startTime && time<=n.endTime);
-        if(idx>=0){notes.splice(idx,1);render();}
+      /* right-click always erases */
+      if(e.button===2){
+        const hit=hitNote(x,y);
+        if(hit){ notes.splice(notes.indexOf(hit.note),1); render(); renderVel(); }
         return;
       }
-      // draw mode: start new note
-      drawing={pitch,startTime:Math.max(0,time),startX:x};
+
+      if(tool==='erase'){
+        const hit=hitNote(x,y);
+        if(hit){ notes.splice(notes.indexOf(hit.note),1); selNote=null; render(); renderVel(); }
+        return;
+      }
+
+      if(tool==='select'){
+        const hit=hitNote(x,y);
+        if(hit){
+          selNote=hit.note;
+          if(hit.handle) resizing={note:hit.note};
+          else { /* drag move -- store offset */ resizing=null; drawing={move:hit.note, ox:x-tToX(hit.note.startTime), oy:y-pToY(hit.note.pitch)}; }
+        } else { selNote=null; }
+        render(); return;
+      }
+
+      /* draw tool */
+      if(x<KEY_W) return;
+      const st=Math.max(0,snapTime(time));
+      drawing={pitch, startTime:st, endTime:st+(60/bpm)*SNAP_VALS[snapIdx]};
     });
 
     cv.addEventListener('mousemove',e=>{
-      if(!editOn||!drawing)return;
-      const{time}=xyToNoteTime(e);
-      // Preview: re-render + draw ghost note
-      render();
-      const ctx=cv.getContext('2d');
-      const endTime=Math.max(drawing.startTime+0.05,time);
-      const x=KEY_W+drawing.startTime*PX_SEC*zoom;
-      const w=Math.max(4,(endTime-drawing.startTime)*PX_SEC*zoom);
-      const y=(maxP-drawing.pitch)*NOTE_H+1;
-      ctx.fillStyle='rgba(100,180,255,0.7)';
-      ctx.fillRect(x,y,w,NOTE_H-2);
+      const {x,y}=evXY(e,cv);
+      const time=xToT(x), pitch=yToP(y);
+
+      if(resizing){
+        const n=resizing.note;
+        const et=Math.max(n.startTime+(60/bpm)*SNAP_VALS[snapIdx], snapTime(time));
+        n.endTime=et;
+        totalTime=Math.max(totalTime,et+0.5);
+        render(); renderVel(); return;
+      }
+
+      if(drawing){
+        if(drawing.move){
+          /* moving a selected note */
+          const n=drawing.move;
+          const newSt=Math.max(0,snapTime(xToT(x-drawing.ox)));
+          const dur=n.endTime-n.startTime;
+          n.startTime=newSt; n.endTime=newSt+dur;
+          n.pitch=Math.max(minP,Math.min(maxP,yToP(y-drawing.oy+NOTE_H/2)));
+          render(); renderVel(); return;
+        }
+        /* ghost note */
+        const et=Math.max(drawing.startTime+(60/bpm)*SNAP_VALS[snapIdx], snapTime(time));
+        drawing.endTime=et;
+        render();
+      }
     });
 
-    cv.addEventListener('mouseup',e=>{
-      if(!editOn||!drawing)return;
-      const{time}=xyToNoteTime(e);
-      const endTime=Math.max(drawing.startTime+(60/bpm*0.25),time);
-      notes.push({pitch:drawing.pitch,startTime:drawing.startTime,
-        endTime:endTime,velocity:80,instrument:0,program:0});
-      notes.sort((a,b)=>a.startTime-b.startTime);
-      totalTime=Math.max(totalTime,endTime+0.5);
-      drawing=null;
-      render();
-    });
+    function endDraw(e){
+      if(drawing && !drawing.move && drawing.pitch>=0 && drawing.pitch<=127){
+        const dur=drawing.endTime-drawing.startTime;
+        if(dur>0.01){
+          notes.push({pitch:drawing.pitch, startTime:drawing.startTime,
+            endTime:drawing.endTime, velocity:80, instrument:0, program:0});
+          notes.sort((a,b)=>a.startTime-b.startTime);
+          totalTime=Math.max(totalTime, drawing.endTime+0.5);
+        }
+      }
+      drawing=null; resizing=null;
+      render(); renderVel();
+    }
+    cv.addEventListener('mouseup', endDraw);
+    document.addEventListener('mouseup', ()=>{ if(drawing||resizing){ endDraw(); }});
 
-    cv.addEventListener('contextmenu',e=>{e.preventDefault();});
-    wrap.addEventListener('mouseleave',()=>{if(drawing){drawing=null;render();}});
+    /* velocity drag */
+    const vcv=document.getElementById('vel-cv');
+    if(vcv){
+      vcv.addEventListener('mousedown',e=>{
+        e.preventDefault();
+        const r=vcv.getBoundingClientRect();
+        const x=e.clientX-r.left;
+        let closest=null, dist=Infinity;
+        notes.forEach(n=>{ const d=Math.abs(tToX(n.startTime)-x); if(d<dist){dist=d;closest=n;} });
+        if(closest&&dist<12) velDrag=closest;
+      });
+      vcv.addEventListener('mousemove',e=>{
+        if(!velDrag) return;
+        const r=vcv.getBoundingClientRect();
+        const yRel=r.bottom-e.clientY;
+        velDrag.velocity=Math.max(1,Math.min(127,Math.round((yRel/VEL_H)*127)));
+        render(); renderVel();
+      });
+      vcv.addEventListener('mouseup',()=>{ velDrag=null; });
+    }
   }
 
+  /* -- legend -- */
   function buildLegend(){
     const el=document.getElementById('tracks-legend');
-    if(!el)return;
+    if(!el) return;
     const progs={};
-    notes.forEach(n=>{const k=n.program||0;progs[k]=(progs[k]||0)+1;});
+    notes.forEach(n=>{ const k=n.program||0; progs[k]=(progs[k]||0)+1; });
+    const NAMES=['Piano','Chromatic Perc','Organ','Guitar','Bass',
+      'Strings','Ensemble','Brass','Reed','Pipe','Synth Lead','Synth Pad',
+      'Synth FX','Ethnic','Percussive','Sound FX'];
     el.innerHTML=Object.keys(progs).map(p=>{
-      const col=COLORS[parseInt(p)%COLORS.length];
-      return`<span><span class="track-dot" style="background:${col}"></span>Prog ${p} (${progs[p]}n)</span>`;
+      const pi=parseInt(p), col=TRACK_COLS[pi%TRACK_COLS.length];
+      const fam=NAMES[Math.floor(pi/8)]||'Prog '+p;
+      return `<span><span class="track-dot" style="background:${col}"></span>${fam} (${progs[p]})</span>`;
     }).join('');
   }
 
+  /* -- export -- */
   function exportMidi(){
-    if(!ns||!notes.length)return;
-    const out=JSON.parse(JSON.stringify(ns));
-    out.notes=notes.map(n=>({
-      pitch:n.pitch,startTime:n.startTime,endTime:n.endTime,
-      velocity:n.velocity||80,instrument:n.instrument||0,program:n.program||0
-    }));
-    out.totalTime=Math.max(...notes.map(n=>n.endTime));
+    if(!notes.length){ alert('Nothing to export.'); return; }
     try{
-      const bytes=mm.midi.noteSequenceToMidi(out);
-      const blob=new Blob([bytes],{type:'audio/midi'});
+      const bytes=writeMidi(notes, bpm);
       const a=document.createElement('a');
-      a.href=URL.createObjectURL(blob);
-      a.download='edited_arrangement.mid';
-      a.click();
-    }catch(e){alert('Export error: '+e.message);}
+      a.href=URL.createObjectURL(new Blob([bytes],{type:'audio/midi'}));
+      a.download='edited_arrangement.mid'; a.click();
+    }catch(e){ alert('Export error: '+e.message); }
   }
 
-  window.addEventListener('load',()=>{
-    load().then(()=>{
-      setupMouse();
-      document.getElementById('edit-btn').onclick=function(){
-        editOn=!editOn;
-        this.classList.toggle('on',editOn);
-        document.getElementById('rc').style.cursor=editOn?'crosshair':'default';
-        document.getElementById('hint').textContent=
-          editOn?'Left-click+drag = add note  ·  Right-click = erase':'';
-      };
-      document.getElementById('erase-btn').onclick=function(){
-        tool=tool==='erase'?'draw':'erase';
-        this.classList.toggle('on',tool==='erase');
-      };
-      document.getElementById('dl-btn').onclick=exportMidi;
-      document.getElementById('zi').onclick=()=>{zoom=Math.min(4,zoom*1.4);render();};
-      document.getElementById('zo').onclick=()=>{zoom=Math.max(0.2,zoom/1.4);render();};
-    });
-  });
+  /* -- toolbar wiring (called after load) -- */
+  function wireTool(id, t){
+    const btn=document.getElementById(id);
+    if(!btn) return;
+    btn.onclick=function(){
+      tool=t;
+      ['draw-btn','erase-btn','sel-btn'].forEach(b=>{
+        const el=document.getElementById(b);
+        if(el) el.classList.remove('on');
+      });
+      this.classList.add('on');
+      const wrap=document.getElementById('roll-wrap');
+      wrap.className='';
+      if(t==='draw') wrap.classList.add('draw');
+      if(t==='erase') wrap.classList.add('erase');
+      document.getElementById('hint').textContent=
+        t==='draw'  ? 'Click+drag = draw note  |  Right-click = erase' :
+        t==='erase' ? 'Click a note to delete it' :
+                      'Click to select  |  Drag body = move  |  Drag right edge = resize';
+    };
+  }
+
+  /* -- init -- */
+  function init(){
+    setupMouse();
+    wireTool('draw-btn','draw');
+    wireTool('erase-btn','erase');
+    wireTool('sel-btn','select');
+    /* default active */
+    const db=document.getElementById('draw-btn');
+    if(db){ db.classList.add('on'); document.getElementById('roll-wrap').classList.add('draw'); }
+
+    const snap=document.getElementById('snap-sel');
+    if(snap){
+      snap.value=snapIdx;
+      snap.onchange=()=>{ snapIdx=parseInt(snap.value); render(); };
+    }
+    document.getElementById('zi').onclick=()=>{ zoom=Math.min(5,zoom*1.35); render(); renderVel(); };
+    document.getElementById('zo').onclick=()=>{ zoom=Math.max(0.3,zoom/1.35); render(); renderVel(); };
+    document.getElementById('dl-btn').onclick=exportMidi;
+  }
+
+  /* wait for mm library then load */
+  function waitAndLoad(url){
+    if(typeof Midi!=='undefined'){ load(url); }
+    else { setTimeout(()=>waitAndLoad(url), 100); }
+  }
+
+  window._rollReload=function(url){ waitAndLoad(url); };
+  window.addEventListener('load',()=>{ init(); waitAndLoad(MIDI_URL); });
 })();
 """
 
@@ -906,22 +1165,37 @@ def _make_simple_player(midi_path: str) -> str:
     midi_url     = f"http://127.0.0.1:{PREVIEW_PORT}/{midi_fname}"
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<script src="https://cdn.jsdelivr.net/combine/npm/tone@14,npm/@magenta/music@1.23.1/es6/core.js,npm/html-midi-player@1.5.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0" defer></script>
 <style>{_ROLL_CSS}</style></head><body>
 <midi-player src="{midi_url}" sound-font></midi-player>
 <div id="toolbar">
-  <button class="tb" id="edit-btn">Edit</button>
+  <button class="tb on" id="draw-btn">Draw</button>
   <button class="tb" id="erase-btn">Erase</button>
+  <button class="tb" id="sel-btn">Select</button>
+  <span class="tb-sep"></span>
+  <span id="snap-label">Snap</span>
+  <select id="snap-sel" style="background:#141c28;color:#6688aa;border:1px solid #1e2a3a;border-radius:3px;font-size:10px;padding:2px 4px;">
+    <option value="0">1/16</option><option value="1">1/8</option>
+    <option value="2" selected>1/4</option><option value="3">1/2</option><option value="4">1</option>
+  </select>
+  <span class="tb-sep"></span>
+  <button class="tb" id="zi">+</button><button class="tb" id="zo">-</button>
+  <span class="tb-sep"></span>
   <button class="tb" id="dl-btn">Export MIDI</button>
-  <span id="hint"></span>
-  <div id="zoom"><button class="tb" id="zi">+</button><button class="tb" id="zo">-</button></div>
+  <span id="hint">Click+drag = draw note  |  Right-click = erase</span>
 </div>
-<div id="roll-wrap"><canvas id="rc"></canvas></div>
+<div id="roll-status" style="padding:3px 6px;font-size:9px;color:#557799;background:#090d14;">Loading...</div>
+<div id="roll-area">
+  <div id="roll-wrap" class="draw"><canvas id="rc"></canvas></div>
+  <div id="vel-wrap"><canvas id="vel-cv"></canvas><span id="vel-label">vel</span></div>
+</div>
 <div id="tracks-legend"></div>
 <script>window.__MIDI_URL__="{midi_url}";{_ROLL_JS}</script>
-</body></html>""")
+</body></html>""", encoding="utf-8")
     player_url = f"http://127.0.0.1:{PREVIEW_PORT}/{player_fname}"
-    return f'<iframe src="{player_url}" style="width:100%;height:260px;border:none;border-radius:8px;" loading="lazy"></iframe>'
+    return f'<iframe src="{player_url}" style="width:100%;height:420px;border:none;border-radius:8px;" loading="lazy"></iframe>'
 
 
 def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> str:
@@ -937,7 +1211,9 @@ def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> s
     player_fname = stem_name + "_player.html"
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<script src="https://cdn.jsdelivr.net/combine/npm/tone@14,npm/@magenta/music@1.23.1/es6/core.js,npm/html-midi-player@1.5.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0" defer></script>
 <style>{_ROLL_CSS}
   #btns{{display:flex;gap:6px;margin-bottom:6px;}}
   #play-btn{{background:#1a3a80;color:#aaccff;border:1px solid #2244aa;}} #stop-btn{{background:#1a1a2a;color:#778899;border:1px solid #222;}}
@@ -952,13 +1228,26 @@ def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> s
 <div id="timeinfo"></div>
 <midi-player id="midi" src="{midi_url}" sound-font></midi-player>
 <div id="toolbar">
-  <button class="tb" id="edit-btn">Edit</button>
+  <button class="tb on" id="draw-btn">Draw</button>
   <button class="tb" id="erase-btn">Erase</button>
+  <button class="tb" id="sel-btn">Select</button>
+  <span class="tb-sep"></span>
+  <span id="snap-label">Snap</span>
+  <select id="snap-sel" style="background:#141c28;color:#6688aa;border:1px solid #1e2a3a;border-radius:3px;font-size:10px;padding:2px 4px;">
+    <option value="0">1/16</option><option value="1">1/8</option>
+    <option value="2" selected>1/4</option><option value="3">1/2</option><option value="4">1</option>
+  </select>
+  <span class="tb-sep"></span>
+  <button class="tb" id="zi">+</button><button class="tb" id="zo">-</button>
+  <span class="tb-sep"></span>
   <button class="tb" id="dl-btn">Export MIDI</button>
-  <span id="hint"></span>
-  <div id="zoom"><button class="tb" id="zi">+</button><button class="tb" id="zo">-</button></div>
+  <span id="hint">Click+drag = draw note  |  Right-click = erase</span>
 </div>
-<div id="roll-wrap"><canvas id="rc"></canvas></div>
+<div id="roll-status" style="padding:3px 6px;font-size:9px;color:#557799;background:#090d14;">Loading...</div>
+<div id="roll-area">
+  <div id="roll-wrap" class="draw"><canvas id="rc"></canvas></div>
+  <div id="vel-wrap"><canvas id="vel-cv"></canvas><span id="vel-label">vel</span></div>
+</div>
 <div id="tracks-legend"></div>
 <script>
   window.__MIDI_URL__="{midi_url}";
@@ -973,9 +1262,9 @@ def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> s
   document.getElementById('play-btn').onclick=()=>{{orig.currentTime=START;orig.play();midi.start();}};
   document.getElementById('stop-btn').onclick=()=>{{orig.pause();midi.stop();}};
   {_ROLL_JS}
-</script></body></html>""")
+</script></body></html>""", encoding="utf-8")
     player_url = f"http://127.0.0.1:{PREVIEW_PORT}/{player_fname}"
-    return f'<iframe src="{player_url}" style="width:100%;height:310px;border:none;border-radius:8px;" loading="lazy"></iframe>'
+    return f'<iframe src="{player_url}" style="width:100%;height:500px;border:none;border-radius:8px;" loading="lazy"></iframe>'
 
 
 def _make_variation_player(paths: list[str], stem_name: str, num_variations: int) -> str:
@@ -994,20 +1283,36 @@ def _make_variation_player(paths: list[str], stem_name: str, num_variations: int
     player_fname = stem_name + "_player.html"
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<script src="https://cdn.jsdelivr.net/combine/npm/tone@14,npm/@magenta/music@1.23.1/es6/core.js,npm/html-midi-player@1.5.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0" defer></script>
 <style>{_ROLL_CSS}
-  .vtab{{margin-right:3px;}} .vtab.on{{background:#0d2040;border-color:#3366aa;color:#77aaee;}}
+  .vtab.on{{background:#1a3a6a;border-color:#4477cc;color:#88bbff;}}
 </style></head><body>
-<div id="toolbar" style="margin-bottom:5px;">{tabs_html}</div>
-<midi-player id="mp" sound-font></midi-player>
 <div id="toolbar">
-  <button class="tb" id="edit-btn">Edit</button>
+  {tabs_html}
+  <span class="tb-sep"></span>
+  <button class="tb on" id="draw-btn">Draw</button>
   <button class="tb" id="erase-btn">Erase</button>
+  <button class="tb" id="sel-btn">Select</button>
+  <span class="tb-sep"></span>
+  <span id="snap-label">Snap</span>
+  <select id="snap-sel" style="background:#141c28;color:#6688aa;border:1px solid #1e2a3a;border-radius:3px;font-size:10px;padding:2px 4px;">
+    <option value="0">1/16</option><option value="1">1/8</option>
+    <option value="2" selected>1/4</option><option value="3">1/2</option><option value="4">1</option>
+  </select>
+  <span class="tb-sep"></span>
+  <button class="tb" id="zi">+</button><button class="tb" id="zo">-</button>
+  <span class="tb-sep"></span>
   <button class="tb" id="dl-btn">Export MIDI</button>
-  <span id="hint"></span>
-  <div id="zoom"><button class="tb" id="zi">+</button><button class="tb" id="zo">-</button></div>
+  <span id="hint">Click+drag = draw note  |  Right-click = erase</span>
 </div>
-<div id="roll-wrap"><canvas id="rc"></canvas></div>
+<midi-player id="mp" sound-font></midi-player>
+<div id="roll-status" style="padding:3px 6px;font-size:9px;color:#557799;background:#090d14;">Loading...</div>
+<div id="roll-area">
+  <div id="roll-wrap" class="draw"><canvas id="rc"></canvas></div>
+  <div id="vel-wrap"><canvas id="vel-cv"></canvas><span id="vel-label">vel</span></div>
+</div>
 <div id="tracks-legend"></div>
 <script>
   const URLS={urls_js};
@@ -1019,10 +1324,10 @@ def _make_variation_player(paths: list[str], stem_name: str, num_variations: int
     if(window._rollReload) window._rollReload(URLS[i]);
   }}
   selectVar(0);
-  {_ROLL_JS.replace("window.addEventListener('load',", "window._rollReload=async function(u){{ window.__MIDI_URL__=u; await load(); }}; window.addEventListener('load',")}
-</script></body></html>""")
+  {_ROLL_JS}
+</script></body></html>""", encoding="utf-8")
     player_url    = f"http://127.0.0.1:{PREVIEW_PORT}/{player_fname}"
-    iframe_height = min(600, 260 + max(0, len(paths) - 1) * 20)
+    iframe_height = min(700, 460 + max(0, len(paths) - 1) * 20)
     return f'<iframe src="{player_url}" style="width:100%;height:{iframe_height}px;border:none;border-radius:8px;" loading="lazy"></iframe>'
 
 
@@ -1034,7 +1339,7 @@ def _make_audio_player(wav_path: str, mp3_path) -> str:
     """Build an HTML audio player for Indian engine renders."""
     audio_path = mp3_path if mp3_path and Path(mp3_path).exists() else wav_path
     if not audio_path or not Path(audio_path).exists():
-        return "<p style='color:#e55;'>Audio render failed — check samples folder.</p>"
+        return "<p style='color:#e55;'>Audio render failed -- check samples folder.</p>"
     fname = Path(audio_path).name
     dest  = OUTPUTS_DIR / fname
     if str(Path(audio_path).resolve()) != str(dest.resolve()):
@@ -1044,7 +1349,7 @@ def _make_audio_player(wav_path: str, mp3_path) -> str:
     return (
         f'<audio controls style="width:100%;margin:8px 0;">'
         f'<source src="{audio_url}" type="audio/{ext}"></audio>'
-        f'<p style="font-size:11px;color:#6b7280;">Rendered via Indian audio engine — real instrument samples</p>'
+        f'<p style="font-size:11px;color:#6b7280;">Rendered via Indian audio engine -- real instrument samples</p>'
     )
 
 
@@ -1104,7 +1409,7 @@ def run_pipeline(
     _korvai_status_block = ""   # filled after section_map is built below
     _korvai_suffix = ""
 
-    # ── Mode 1: Upload / Record (transcription) ────────────────────────────
+    # -- Mode 1: Upload / Record (transcription) ----------------------------
     if melody_source == "Upload / Record":
         if audio_input is None:
             yield None, None,"No audio provided. Record or upload a melody first."
@@ -1113,7 +1418,7 @@ def run_pipeline(
         audio_path = audio_input if isinstance(audio_input, str) else audio_input.name
         backend = "crepe" if pitch_tracker == "CREPE (neural)" else "pyin"
         tracker_label = "CREPE neural" if backend == "crepe" else "pyin"
-        yield None, None,f"Step 1/4 — Transcribing with {tracker_label} pitch detector…"
+        yield None, None,f"Step 1/4 -- Transcribing with {tracker_label} pitch detector…"
         try:
             raw_notes = transcribe_audio(
                 audio_path, backend=backend,
@@ -1134,7 +1439,7 @@ def run_pipeline(
             tempo = round(detect_tempo(audio_path) / 2.0, 1)
         else:
             tempo = manual_tempo
-        yield None, None,f"Step 2/4 — {tempo} BPM. Quantising…"
+        yield None, None,f"Step 2/4 -- {tempo} BPM. Quantising…"
         notes      = quantize_to_grid(raw_notes, tempo)
         key        = detect_key(notes) if key_mode == "Auto-detect" else manual_key
         # Use the audio file's actual duration, not just the last pyin-detected pitch.
@@ -1154,7 +1459,7 @@ def run_pipeline(
         melody_instrument   = instruments[0]
         harmony_instruments = instruments[1:]
 
-        # Always clamp to melody length — song structure must not extend beyond the recording.
+        # Always clamp to melody length -- song structure must not extend beyond the recording.
         melody_total_beats = total_beats
         chord_timeline, _, chord_chart, chord_summary, section_map = _build_chord_timeline(
             chord_input, beats_per_chord, melody_total_beats, beats_per_bar, key,
@@ -1170,7 +1475,7 @@ def run_pipeline(
         total_beats = melody_total_beats
 
         # If no chords were provided, detect phrase boundaries from the melody
-        # and suggest chords per phrase — no rigid bar-grid required.
+        # and suggest chords per phrase -- no rigid bar-grid required.
         if not chord_timeline and notes:
             chord_timeline = auto_chord_timeline_from_melody(
                 notes, key, total_beats, beats_per_bar, beats_per_chord
@@ -1191,7 +1496,7 @@ def run_pipeline(
         )
 
         if all_algo_harmony and chord_timeline:
-            yield None, None,f"Step 3/4 — Building harmony (algorithmic)…\n{note_summary}\n{chord_summary}"
+            yield None, None,f"Step 3/4 -- Building harmony (algorithmic)…\n{note_summary}\n{chord_summary}"
             orchestration = {
                 "key": key, "tempo": tempo,
                 "parts": {inst: [] for inst in instruments},
@@ -1203,7 +1508,7 @@ def run_pipeline(
                 section_map=section_map or None,
             )
         else:
-            yield None, None,f"Step 3/4 — Generating harmony…\n{note_summary}\n{chord_summary}Starting…"
+            yield None, None,f"Step 3/4 -- Generating harmony…\n{note_summary}\n{chord_summary}Starting…"
             try:
                 orchestration = None
                 for progress, result in orchestrate_streaming(
@@ -1226,7 +1531,7 @@ def run_pipeline(
                     if result is not None:
                         orchestration = result
                     else:
-                        yield None, None,f"Step 3/4 — {progress}\n{note_summary}"
+                        yield None, None,f"Step 3/4 -- {progress}\n{note_summary}"
             except RuntimeError as e:
                 yield None, None,f"Orchestration failed:\n{e}"; return
 
@@ -1236,9 +1541,9 @@ def run_pipeline(
             orchestration = humanize_orchestration(orchestration, amount=humanize_amount,
                                                    melody_instruments=_MELODY_INSTRUMENTS)
 
-        # ── Indian preset: render to audio via sample engine instead of MIDI ──
+        # -- Indian preset: render to audio via sample engine instead of MIDI --
         if _INDIAN_ENGINE_AVAILABLE and is_indian_preset(preset_name):
-            yield None, None, "Step 4/4 — Rendering Indian audio (real samples)…"
+            yield None, None, "Step 4/4 -- Rendering Indian audio (real samples)…"
             try:
                 output_stem = str(OUTPUTS_DIR / f"{timestamp}_{safe_preset}_{safe_key}")
                 wav_path, mp3_path = render_indian_audio(
@@ -1262,7 +1567,7 @@ def run_pipeline(
             )
             return
 
-        yield None, None,"Step 4/4 — Building MIDI…"
+        yield None, None,"Step 4/4 -- Building MIDI…"
         output_path = str(OUTPUTS_DIR / f"{timestamp}_{safe_preset}_{safe_key}{_korvai_suffix}.mid")
         harmony_midi_path = str(OUTPUTS_DIR / f"{timestamp}_{safe_preset}_{safe_key}{_korvai_suffix}_harmony.mid")
         try:
@@ -1292,12 +1597,12 @@ def run_pipeline(
         yield player_html, output_path, (
             f"Done.\n{note_summary}\n\n{preset_name}:\n{part_summary}\n\n"
             f"Player: {', '.join(harmony_names)} only.\n"
-            f"Full MIDI (download) also includes {melody_instrument} — your transcribed melody as MIDI."
+            f"Full MIDI (download) also includes {melody_instrument} -- your transcribed melody as MIDI."
             f"{_korvai_status_block}{section_note}"
         )
         return
 
-    # ── Mode 2: Harmony only (no LLM — instant) ───────────────────────────
+    # -- Mode 2: Harmony only (no LLM -- instant) ---------------------------
     if melody_source == "Harmony only":
         tempo = manual_tempo
         key   = manual_key if key_mode == "Manual" else "C major"
@@ -1328,7 +1633,7 @@ def run_pipeline(
         safe_key    = re.sub(r"[^\w]+", "_", key).strip("_")
         output_path = str(OUTPUTS_DIR / f"{timestamp}_{safe_preset}_{safe_key}{_korvai_suffix}_harmony.mid")
 
-        # ── Indian preset: generate raga melody and render to audio ──────────
+        # -- Indian preset: generate raga melody and render to audio ----------
         if _INDIAN_ENGINE_AVAILABLE and is_indian_preset(preset_name):
             yield None, None, "Rendering Indian audio (real samples)…"
             try:
@@ -1376,7 +1681,7 @@ def run_pipeline(
         )
         return
 
-    # ── Mode 3: AI-generated melody (compose_streaming) ───────────────────
+    # -- Mode 3: AI-generated melody (compose_streaming) -------------------
     tempo = manual_tempo
     key   = manual_key if key_mode == "Manual" else "C major"
     total_beats_raw = duration_bars * beats_per_bar
@@ -1400,9 +1705,9 @@ def run_pipeline(
         var_label = f"Variation {var_idx+1}/{num_variations}"
         remaining = num_variations - var_idx - 1
 
-        # ── Indian preset: raga engine → audio, skip LLM entirely ───────────
+        # -- Indian preset: raga engine → audio, skip LLM entirely -----------
         if _INDIAN_ENGINE_AVAILABLE and is_indian_preset(preset_name):
-            yield None, None, f"{var_label} — generating raga melody…\n{summary}"
+            yield None, None, f"{var_label} -- generating raga melody…\n{summary}"
             try:
                 raga = get_raga_for_key(key)
                 melody_notes = generate_raga_melody(
@@ -1419,19 +1724,19 @@ def run_pipeline(
                 out_audio = mp3_path or wav_path
                 variation_paths.append(out_audio)
                 variation_summaries.append(
-                    f"Var {var_idx+1} — raga melody ({len(melody_notes)} notes)"
+                    f"Var {var_idx+1} -- raga melody ({len(melody_notes)} notes)"
                 )
             except Exception as e:
                 variation_errors.append(f"{var_label}: {e}")
                 yield None, None, f"{var_label} failed: {e}"; continue
-            next_msg = f" — generating variation {var_idx+2}…" if remaining > 0 else ""
+            next_msg = f" -- generating variation {var_idx+2}…" if remaining > 0 else ""
             yield (
                 _make_audio_player(wav_path, mp3_path), out_audio,
                 f"✓ {var_label} ready{next_msg}\n\n{summary}\n\n" + "\n\n".join(variation_summaries),
             )
             continue
 
-        yield None, None,f"{var_label} — generating (temp={var_temp:.2f})…\n{summary}"
+        yield None, None,f"{var_label} -- generating (temp={var_temp:.2f})…\n{summary}"
 
         try:
             orchestration = None
@@ -1447,7 +1752,7 @@ def run_pipeline(
                 if result is not None:
                     orchestration = result
                 else:
-                    yield None, None,f"{var_label} — {progress}\n{summary}"
+                    yield None, None,f"{var_label} -- {progress}\n{summary}"
         except RuntimeError as e:
             variation_errors.append(f"{var_label}: {e}")
             yield None, None,f"{var_label} failed (details below).\n\n{e}"; continue
@@ -1477,7 +1782,7 @@ def run_pipeline(
             "time_sig": time_sig, "total_beats": total_beats,
             "style": combined_style, "ts_info": ts_info, "section_map": section_map})
 
-        next_msg = f" — generating variation {var_idx+2}…" if remaining > 0 else ""
+        next_msg = f" -- generating variation {var_idx+2}…" if remaining > 0 else ""
         yield (
             _make_variation_player(variation_paths, stem_name, num_variations),
             output_path,
@@ -1495,7 +1800,7 @@ def run_pipeline(
     yield (
         _make_variation_player(variation_paths, stem_name, num_variations),
         variation_paths[-1],
-        f"Done — {len(variation_paths)} variation(s).\n\n{summary}\n\nAll MIDIs in outputs/{_korvai_status_block}{section_note}",
+        f"Done -- {len(variation_paths)} variation(s).\n\n{summary}\n\nAll MIDIs in outputs/{_korvai_status_block}{section_note}",
     )
 
 # ---------------------------------------------------------------------------
@@ -1608,7 +1913,7 @@ _TOOLTIP_JS = """
   });
   document.body.appendChild(tip);
 
-  // ── Audio synthesis ────────────────────────────────────────────────────────
+  // -- Audio synthesis --------------------------------------------------------
   var _audioCtx    = null;
   var _activeOscs  = [];
   var _masterGain  = null, _bassGain = null, _chordGain = null, _drumGain = null;
@@ -1659,13 +1964,13 @@ _TOOLTIP_JS = """
     _drumGain.connect(_masterGain);
     _melodyGain.connect(_masterGain);
     _ghostGain.connect(_masterGain);
-    // Send each bus to reverb (bass gets less room — keeps it tight)
+    // Send each bus to reverb (bass gets less room -- keeps it tight)
     var bassRevSend = _audioCtx.createGain(); bassRevSend.gain.value = 0.45;
     _bassGain.connect(bassRevSend); bassRevSend.connect(_reverbSend);
     _chordGain.connect(_reverbSend);
     _drumGain.connect(_reverbSend);
     _melodyGain.connect(_reverbSend);
-    // Ghost gets a heavy reverb send — it should feel distant/orchestral
+    // Ghost gets a heavy reverb send -- it should feel distant/orchestral
     var ghostRevSend = _audioCtx.createGain(); ghostRevSend.gain.value = 1.2;
     _ghostGain.connect(ghostRevSend); ghostRevSend.connect(_reverbSend);
     _reverbSend.connect(_reverbNode);
@@ -1711,7 +2016,7 @@ _TOOLTIP_JS = """
 
   // Spread chord tones across octaves for a natural piano voicing.
   // Root lands in C3-G3 range; inner voices build upward, each at least a minor 3rd above the previous.
-  // Style-aware chord voicing — adds 7ths/9ths for jazz/Rhodes styles,
+  // Style-aware chord voicing -- adds 7ths/9ths for jazz/Rhodes styles,
   // shell voicings (3rd+7th only) for 'Jazz Shell', close voicings for pop.
   function _voiceNotesToMidi(notes, style) {
     var pcs = notes.map(function(n){ return _NOTE_PC[n] || 0; });
@@ -1748,7 +2053,7 @@ _TOOLTIP_JS = """
       var ninth = seventh + ninthAbove;
       if (ninth - root > 24) ninth -= 12; // don't spread too wide
       midi = [root, third, seventh, ninth];
-      // Keep it in a comfortable register — shift whole voicing up if too low
+      // Keep it in a comfortable register -- shift whole voicing up if too low
       if (midi[midi.length-1] < 60) midi = midi.map(function(m){ return m+12; });
     }
 
@@ -1818,7 +2123,7 @@ _TOOLTIP_JS = """
     });
   }
 
-  // ── Data & rendering ───────────────────────────────────────────────────────
+  // -- Data & rendering -------------------------------------------------------
   function getChordData() {
     const el = document.getElementById('chord-tooltip-data');
     if (!el) return {};
@@ -1837,7 +2142,7 @@ _TOOLTIP_JS = """
       '<div style="margin-top:8px;line-height:0">' + d.piano + '</div>';
   }
 
-  // ── Event delegation — attached once, reads live data on every hover ───────
+  // -- Event delegation -- attached once, reads live data on every hover -------
   // Per-label handlers would capture stale closures when the palette regenerates
   // (Svelte reuses DOM nodes, so data-tip-attached persists across palette changes).
   // Delegation on the container always reads the current chord-tooltip-data div.
@@ -1862,7 +2167,7 @@ _TOOLTIP_JS = """
       const parts = span.textContent.trim().split('·');
       const symbol = (parts.length > 1 ? parts[parts.length - 1] : parts[0]).trim();
 
-      if (symbol === lastSymbol) return; // still on the same chord — just reposition
+      if (symbol === lastSymbol) return; // still on the same chord -- just reposition
       lastSymbol = symbol;
 
       const d = getChordData()[symbol];
@@ -1891,7 +2196,7 @@ _TOOLTIP_JS = """
     }
   };
 
-  // ── Live accompaniment engine ───────────────────────────────────────────────
+  // -- Live accompaniment engine -----------------------------------------------
   var _accompRunning   = false;
   var _accompTimer     = null;
   var _accompBeatsLeft = 0;   // float beat counter (supports fractional bars/chord)
@@ -1905,7 +2210,7 @@ _TOOLTIP_JS = """
   var _dynamicLevel    = 1.0;   // 0.65–1.0, drifts slowly bar-by-bar
   var _lastFillType    = -1;    // avoid repeating same fill twice in a row
   var _sparseBarsLeft  = 0;     // countdown for a "pull back" moment
-  // Shared clock drift — all parts follow this together; corrects at chord boundaries
+  // Shared clock drift -- all parts follow this together; corrects at chord boundaries
   var _clockDrift      = 0.0;   // current offset in seconds (applied to all parts)
   var _driftTarget     = 0.0;   // where the drift is slowly heading
   // MIDI output port for streaming to DAW (Logic Pro via IAC)
@@ -1919,7 +2224,7 @@ _TOOLTIP_JS = """
   var _passingChord    = null; // {symbol, label, notes} of the current passing chord
   // Reverse pitch-class map for building passing chord notes
   var _PC_NOTE = ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
-  // MIDI clock — uses setInterval (not WebAudio scheduling) so 0xF8 arrives in real-time
+  // MIDI clock -- uses setInterval (not WebAudio scheduling) so 0xF8 arrives in real-time
   var _midiClockTimer  = null;
   var _midiClockNextMs = 0;     // performance.now() ms when next 0xF8 is due
   var _midiClockIvMs   = 20.83; // pulse interval in ms (updated on every BPM change)
@@ -1935,10 +2240,10 @@ _TOOLTIP_JS = """
       if (!_midiOutput || !_accompRunning) return;
       var now = performance.now();
       while (_midiClockNextMs <= now) {
-        _midiOutput.send([0xF8]); // Timing Clock — sent immediately, no future timestamp
+        _midiOutput.send([0xF8]); // Timing Clock -- sent immediately, no future timestamp
         _midiClockNextMs += _midiClockIvMs;
       }
-    }, 2); // 2ms poll — tight enough to keep jitter well under 1 BPM at any tempo
+    }, 2); // 2ms poll -- tight enough to keep jitter well under 1 BPM at any tempo
   }
 
   function _stopMidiClock() {
@@ -1960,7 +2265,7 @@ _TOOLTIP_JS = """
   window._chordInstOverride = '';
 
 
-  // Melody track (gain node created in _ensureGainNodes — do NOT redeclare here)
+  // Melody track (gain node created in _ensureGainNodes -- do NOT redeclare here)
   var _melodyInst = 'piano2', _melodyVol = 0;
   window.setMelodyVolume = function(v) {
     _melodyVol = parseFloat(v);
@@ -1987,7 +2292,7 @@ _TOOLTIP_JS = """
   window.setPassProb  = function(v) { _passProb  = Math.max(0, Math.min(1, parseFloat(v) || 0)); };
   window.setPassType  = function(v) { _passType  = v || 'sec_dom'; };
 
-  // ── Instrument synthesizers ─────────────────────────────────────────────────
+  // -- Instrument synthesizers -------------------------------------------------
 
   function _playPianoNote(midiNote, t, dur, vel) {
     // Identical signal chain to the palette hover: triangle fundamental → lowpass → chordGain
@@ -2007,7 +2312,7 @@ _TOOLTIP_JS = """
     });
   }
 
-  // ── Style-specific chord synthesizers ──────────────────────────────────────
+  // -- Style-specific chord synthesizers --------------------------------------
 
   // Helper: midi note → freq, with fallback to note-string + octave offset
   function _midiFreq(midiNote, note, octaveBase) {
@@ -2115,7 +2420,7 @@ _TOOLTIP_JS = """
 
   // Rhodes: FM bell-tone with key click, velocity brightness, pitch droop
   function _playRhodesNote(midiNote, t, dur, vel) {
-    // Each tine is slightly detuned — gives that warm, slightly imperfect character
+    // Each tine is slightly detuned -- gives that warm, slightly imperfect character
     var detuneCents = (Math.random() - 0.5) * 6;
     var freq = 440 * Math.pow(2, (midiNote - 69 + detuneCents / 100) / 12);
     var ctx = _audioCtx, dec = Math.min(dur, 3.5);
@@ -2321,7 +2626,7 @@ _TOOLTIP_JS = """
     var master = ctx.createGain(); master.connect(_chordGain);
     var lp = ctx.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3200; lp.Q.value = 0.6;
     lp.connect(master);
-    // 5 detuned saws per note — ensemble shimmer
+    // 5 detuned saws per note -- ensemble shimmer
     var detunes = [-8, -3, 0, 3, 8];
     detunes.forEach(function(d) {
       var osc = ctx.createOscillator(), g = ctx.createGain();
@@ -2397,7 +2702,7 @@ _TOOLTIP_JS = """
     master.gain.value = 0.92;
   }
 
-  // ── Style → instrument routing ──────────────────────────────────────────────
+  // -- Style → instrument routing ----------------------------------------------
   var _STYLE_INSTR = {
     'Ballad':        'strings',
     'Jazz':          'guitar',
@@ -2476,7 +2781,7 @@ _TOOLTIP_JS = """
            inst === 'accordion' || inst === 'organ';
   }
 
-  // ── MIDI recording ──────────────────────────────────────────────────────────
+  // -- MIDI recording ----------------------------------------------------------
   var _recording    = false;
   var _recordStart  = 0;
   var _recordEvents = [];
@@ -2517,12 +2822,12 @@ _TOOLTIP_JS = """
     _recordEvents.push({t:t-_recordStart+dur, type:'off', ch:9, note:note, vel:0});
   }
 
-  // ── Drum synthesis — multi-layer, velocity-sensitive timbre ─────────────────
+  // -- Drum synthesis -- multi-layer, velocity-sensitive timbre -----------------
 
   function _playKick(t, vel) {
     _logDrumGM(t, 'kick', vel);
     var ctx = _audioCtx;
-    // Sub layer: deep sine with pitch sweep — the "thump"
+    // Sub layer: deep sine with pitch sweep -- the "thump"
     var sub = ctx.createOscillator(), subG = ctx.createGain();
     sub.type = 'sine';
     var f0 = 52 + vel * 18;  // harder hit = slightly higher fundamental
@@ -2541,7 +2846,7 @@ _TOOLTIP_JS = """
     bodyG.gain.linearRampToValueAtTime(vel * 0.50, t + 0.001);
     bodyG.gain.exponentialRampToValueAtTime(0.0001, t + 0.06);
     body.connect(bodyG); bodyG.connect(_drumGain); body.start(t); body.stop(t + 0.08);
-    // Click transient: beater impact — brighter on harder hits
+    // Click transient: beater impact -- brighter on harder hits
     if (_noiseBuffer) {
       var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
       ns.buffer = _noiseBuffer;
@@ -2555,7 +2860,7 @@ _TOOLTIP_JS = """
     _logDrumGM(t, 'snare', vel);
     if (!_noiseBuffer) return;
     var ctx = _audioCtx;
-    // Crack — high noise burst, filter opens wider on harder hits (brightness follows velocity)
+    // Crack -- high noise burst, filter opens wider on harder hits (brightness follows velocity)
     var ns1 = ctx.createBufferSource(), ng1 = ctx.createGain(), nf1 = ctx.createBiquadFilter();
     ns1.buffer = _noiseBuffer;
     nf1.type = 'bandpass'; nf1.frequency.value = 800 + vel * 1400; nf1.Q.value = 0.7 + vel * 0.5;
@@ -2563,7 +2868,7 @@ _TOOLTIP_JS = """
     ng1.gain.linearRampToValueAtTime(vel * 0.90, t + 0.001);
     ng1.gain.exponentialRampToValueAtTime(0.0001, t + 0.06 + vel * 0.06);
     ns1.connect(nf1); nf1.connect(ng1); ng1.connect(_drumGain); ns1.start(t); ns1.stop(t + 0.16);
-    // Wire buzz — longer tail, filtered separately
+    // Wire buzz -- longer tail, filtered separately
     var ns2 = ctx.createBufferSource(), ng2 = ctx.createGain(), nf2 = ctx.createBiquadFilter();
     ns2.buffer = _noiseBuffer;
     nf2.type = 'highpass'; nf2.frequency.value = 3500;
@@ -2571,7 +2876,7 @@ _TOOLTIP_JS = """
     ng2.gain.linearRampToValueAtTime(vel * 0.30, t + 0.012);
     ng2.gain.exponentialRampToValueAtTime(0.0001, t + 0.10 + vel * 0.05);
     ns2.connect(nf2); nf2.connect(ng2); ng2.connect(_drumGain); ns2.start(t); ns2.stop(t + 0.18);
-    // Body resonance — pitch varies slightly per hit (no two snares sound identical)
+    // Body resonance -- pitch varies slightly per hit (no two snares sound identical)
     var bodyF = 175 + Math.random() * 25;
     var osc = ctx.createOscillator(), og = ctx.createGain();
     osc.type = 'triangle'; osc.frequency.setValueAtTime(bodyF * 1.3, t);
@@ -2585,7 +2890,7 @@ _TOOLTIP_JS = """
     _logDrumGM(t, 'ghost', vel * 0.28);
     if (!_noiseBuffer) return;
     var ctx = _audioCtx;
-    // Ghost: wire buzz only — no crack, no body. Very soft, high freq.
+    // Ghost: wire buzz only -- no crack, no body. Very soft, high freq.
     var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
     ns.buffer = _noiseBuffer;
     nf.type = 'bandpass'; nf.frequency.value = 2200 + Math.random() * 600; nf.Q.value = 1.1;
@@ -2620,7 +2925,7 @@ _TOOLTIP_JS = """
     _logDrumGM(t, 'ride', vel);
     if (!_noiseBuffer) return;
     var ctx = _audioCtx;
-    // Bell: pitched component at ~1000-1200 Hz — sine + slight harmonics
+    // Bell: pitched component at ~1000-1200 Hz -- sine + slight harmonics
     var bellFreq = 1020 + Math.random() * 60;
     [[1, 0.28], [2.76, 0.10], [5.4, 0.04]].forEach(function(h) {
       var osc = ctx.createOscillator(), g = ctx.createGain();
@@ -2642,7 +2947,7 @@ _TOOLTIP_JS = """
     _logDrumGM(t, 'crash', vel);
     if (!_noiseBuffer) return;
     var ctx = _audioCtx;
-    // Crash: two noise layers — initial explosion + long wash
+    // Crash: two noise layers -- initial explosion + long wash
     [[3800, 0.45, 0.008, 0.90], [6500, 0.38, 0.003, 0.55]].forEach(function(b) {
       var ns = ctx.createBufferSource(), ng = ctx.createGain(), nf = ctx.createBiquadFilter();
       ns.buffer = _noiseBuffer; nf.type = 'highpass'; nf.frequency.value = b[0];
@@ -2711,7 +3016,7 @@ _TOOLTIP_JS = """
     else if (type==='clap')       _playClap(t, vel);
   }
 
-  // ── Drum fills — called at end-of-phrase bars ────────────────────────────────
+  // -- Drum fills -- called at end-of-phrase bars --------------------------------
   function _playDrumFill(startTime, beatDur, bpb, style) {
     var pick = Math.floor(Math.random() * 4);
     while (pick === _lastFillType) pick = Math.floor(Math.random() * 4);
@@ -2741,7 +3046,7 @@ _TOOLTIP_JS = """
     }
   }
 
-  // ── Bass fill — walking run toward next chord root ───────────────────────────
+  // -- Bass fill -- walking run toward next chord root ---------------------------
   function _playBassFill(root, nextRoot, startTime, beatDur, bpb) {
     var pc = _NOTE_PC[root]; if (pc === undefined) return;
     var base = 48 + pc;
@@ -2902,7 +3207,7 @@ _TOOLTIP_JS = """
     var midi = 48 + pc;
     var freq = 440 * Math.pow(2, (midi - 69) / 12);
     var ctx  = _audioCtx;
-    // Master gain — all layers go through this so they share the amplitude envelope
+    // Master gain -- all layers go through this so they share the amplitude envelope
     var master = ctx.createGain();
     master.gain.setValueAtTime(0, t);
     master.gain.linearRampToValueAtTime(0.92, t + 0.020);
@@ -2921,7 +3226,7 @@ _TOOLTIP_JS = """
     g2.gain.setValueAtTime(0.14, t);
     g2.gain.exponentialRampToValueAtTime(0.0001, t + Math.min(d * 0.5, 0.5));
     osc2.connect(g2); g2.connect(master);
-    // Pluck transient — short click, modest level
+    // Pluck transient -- short click, modest level
     if (_noiseBuffer) {
       var ns = ctx.createBufferSource(), ng2 = ctx.createGain(), nf = ctx.createBiquadFilter();
       ns.buffer = _noiseBuffer; nf.type = 'bandpass'; nf.frequency.value = freq * 3.5; nf.Q.value = 2.5;
@@ -3003,7 +3308,7 @@ _TOOLTIP_JS = """
     src.start(t); src.stop(stopAt);
   }
 
-  // ── Rhythm patterns ─────────────────────────────────────────────────────────
+  // -- Rhythm patterns ---------------------------------------------------------
   // d = minimum density level to include (1=sparse, 2=moderate, 3=dense)
 
   var _PATTERNS = {
@@ -3072,7 +3377,7 @@ _TOOLTIP_JS = """
       {beat:2.5, type:'bass',  vel:0.68, d:2},
       {beat:3,   type:'chord', vel:0.42, d:2},
       {beat:3.5, type:'chord', vel:0.55, d:1}]; },
-    // Rhodes: jazz comp feel — chord on 2 and 4 with added anticipation
+    // Rhodes: jazz comp feel -- chord on 2 and 4 with added anticipation
     'Rhodes': function(bpb) { return [
       {beat:0,   type:'bass',  vel:0.78, d:1},
       {beat:1,   type:'chord', vel:0.55, d:1},
@@ -3091,7 +3396,7 @@ _TOOLTIP_JS = """
       {beat:2.5, type:'chord', vel:0.40, d:3},
       {beat:3,   type:'bass',  vel:0.55, d:3},
       {beat:3.5, type:'chord', vel:0.62, d:1}]; },
-    // Vibraphone: sparse and open — lots of ring
+    // Vibraphone: sparse and open -- lots of ring
     'Vibraphone': function(bpb) { return [
       {beat:0,   type:'bass',  vel:0.70, d:1},
       {beat:1,   type:'chord', vel:0.60, d:1},
@@ -3122,7 +3427,7 @@ _TOOLTIP_JS = """
       {beat:2.5, type:'chord', vel:0.62, d:1},
       {beat:3,   type:'bass',  vel:0.48, d:3},
       {beat:3.5, type:'chord', vel:0.44, d:2}]; },
-    // Acoustic: fingerpick pattern — bass on 1, plucked arpeggiated chord fills
+    // Acoustic: fingerpick pattern -- bass on 1, plucked arpeggiated chord fills
     'Acoustic': function(bpb) { return [
       {beat:0,    type:'bass',  vel:0.82, d:1},
       {beat:0.5,  type:'chord', vel:0.52, d:1},
@@ -3151,7 +3456,7 @@ _TOOLTIP_JS = """
       {beat:2,   type:'bass',  vel:0.60, d:2},
       {beat:3,   type:'chord', vel:0.55, d:1},
       {beat:3,   type:'bass',  vel:0.52, d:3}]; },
-    // Jazz Shell: very open comping — long spaces, shell voicings, comp on "and" beats
+    // Jazz Shell: very open comping -- long spaces, shell voicings, comp on "and" beats
     'Jazz Shell': function(bpb) { return [
       {beat:0,    type:'bass',  vel:0.70, d:1},
       {beat:0.5,  type:'chord', vel:0.42, d:1},
@@ -3194,7 +3499,7 @@ _TOOLTIP_JS = """
       {beat:3,    type:'bass',  vel:0.70, d:2},
       {beat:3,    type:'chord', vel:0.68, d:1},
       {beat:3.5,  type:'chord', vel:0.80, d:1}]; },
-    // Soul: Motown/Stax feel — bass push, chord on 2+4
+    // Soul: Motown/Stax feel -- bass push, chord on 2+4
     'Soul': function(bpb) { return [
       {beat:0,    type:'bass',  vel:0.90, d:1},
       {beat:0.5,  type:'chord', vel:0.48, d:3},
@@ -3353,7 +3658,7 @@ _TOOLTIP_JS = """
       {beat:3.5,  type:'chord', vel:0.72, d:1}]; },
   };
 
-  // ── Drum pattern library ─────────────────────────────────────────────────────
+  // -- Drum pattern library -----------------------------------------------------
   // Events: beat (0-based), type (see _DRUM_GM), vel (0-1), d (min density 1-3)
   // Events with beat >= bpb are skipped for shorter time signatures automatically.
 
@@ -3484,7 +3789,7 @@ _TOOLTIP_JS = """
   'Bossa Nova': { label:'Bossa Nova', cat:'Latin', events: [
     {beat:0,    type:'kick',  vel:0.72,d:1},{beat:2,    type:'kick',  vel:0.65,d:1},
     {beat:2.5,  type:'kick',  vel:0.52,d:2},
-    // Rim click (snare) on off-beats — the clave feel
+    // Rim click (snare) on off-beats -- the clave feel
     {beat:0.5,  type:'snare', vel:0.42,d:1},{beat:1.5,  type:'snare', vel:0.38,d:1},
     {beat:2.5,  type:'snare', vel:0.40,d:2},{beat:3,    type:'snare', vel:0.35,d:1},
     // Hi-hat avoids downbeats
@@ -3498,7 +3803,7 @@ _TOOLTIP_JS = """
   'Double Time': { label:'Double Time', cat:'Groove', events: [
     {beat:0,   type:'kick',  vel:0.88,d:1},{beat:2,   type:'kick',  vel:0.82,d:1},
     {beat:1,   type:'snare', vel:0.85,d:1},{beat:3,   type:'snare', vel:0.85,d:1},
-    // All 16ths on hi-hat — this IS the double-time feel
+    // All 16ths on hi-hat -- this IS the double-time feel
     {beat:0,    type:'hihat',vel:0.55,d:1},{beat:0.25, type:'hihat',vel:0.36,d:1},
     {beat:0.5,  type:'hihat',vel:0.48,d:1},{beat:0.75, type:'hihat',vel:0.33,d:1},
     {beat:1,    type:'hihat',vel:0.52,d:1},{beat:1.25, type:'hihat',vel:0.36,d:1},
@@ -3566,7 +3871,7 @@ _TOOLTIP_JS = """
 
   }; // end _DRUM_LIBRARY
 
-  // ── Passing chord builder ────────────────────────────────────────────────────
+  // -- Passing chord builder ----------------------------------------------------
 
   function _buildPassingChord(destChord) {
     var root0 = destChord.notes[0];
@@ -3598,7 +3903,7 @@ _TOOLTIP_JS = """
     return { symbol: rootName + suffix, label: '→ ' + rootName + suffix, notes: notes, isPassing: true };
   }
 
-  // ── Bar scheduler ───────────────────────────────────────────────────────────
+  // -- Bar scheduler -----------------------------------------------------------
 
   function _accompScheduleBar(startTime) {
     var st    = _accompState;
@@ -3610,8 +3915,8 @@ _TOOLTIP_JS = """
     var sustained = _sustainedStyle();
     _updateMixChordLabel();
 
-    // ── Shared clock drift: all parts follow this together ──────────────────────
-    // At Feel=0, drift is hard zero — everything perfectly on the grid.
+    // -- Shared clock drift: all parts follow this together ----------------------
+    // At Feel=0, drift is hard zero -- everything perfectly on the grid.
     // At Feel>0, drift wanders slowly (Ornstein-Uhlenbeck) and snaps back toward
     // zero at chord boundaries ("appear to make mistakes, then correct yourself").
     if (_humanize > 0) {
@@ -3721,7 +4026,7 @@ _TOOLTIP_JS = """
       });
     }
 
-    // ── Dynamic level: drifts slowly like a band breathing in and out ──────────
+    // -- Dynamic level: drifts slowly like a band breathing in and out ----------
     _barCount++;
     _dynamicLevel += (Math.random() - 0.48) * 0.09; // band breathes bar to bar
     _dynamicLevel = Math.max(0.62, Math.min(1.0, _dynamicLevel));
@@ -3761,7 +4066,7 @@ _TOOLTIP_JS = """
       if (isCrashBar) _playDrumEvent('crash', startTime + _clockDrift, 0.65 * _dynamicLevel);
     }
 
-    // ── Occasional bass fill: chromatic run toward next chord (every ~6 bars) ──
+    // -- Occasional bass fill: chromatic run toward next chord (every ~6 bars) --
     var nextCh = nextChord;
     if (bd > 0 && !walkingBass && isFillBar && nextCh && Math.random() < 0.55) {
       var bRoot = (chord.notes || [])[0], nRoot = (nextCh.notes || [])[0];
@@ -3770,7 +4075,7 @@ _TOOLTIP_JS = """
       }
     }
 
-    // ── Chord voicing rotation — every ~3 bars, rotate inversion for variety ───
+    // -- Chord voicing rotation -- every ~3 bars, rotate inversion for variety ---
     // (already scheduled above; this is a no-op placeholder for future extension)
 
     var disp = document.getElementById('accomp-now-playing');
@@ -3785,7 +4090,7 @@ _TOOLTIP_JS = """
 
   }
 
-  // ── Markov chord transitions ────────────────────────────────────────────────
+  // -- Markov chord transitions ------------------------------------------------
 
   function _chordFn(label) {
     var r = (label.split('·')[0]||'').trim().replace(/[♭♯°✶]/g,'').toUpperCase();
@@ -3854,7 +4159,7 @@ _TOOLTIP_JS = """
   // changes (new root/mode, different checkboxes) take effect without stopping.
   function _refreshChordPool() {
     var fresh = _readAccompChords();
-    if (!fresh.length) return; // nothing selected yet — keep current pool
+    if (!fresh.length) return; // nothing selected yet -- keep current pool
     var curSym = (_accompState.chords[_accompState.idx] || {}).symbol;
     _accompState.chords = fresh;
     // Stay on the same chord if it still exists in the new pool
@@ -3882,7 +4187,7 @@ _TOOLTIP_JS = """
       if (_accompBeatsLeft <= 0) {
         _driftTarget *= 0.18; // drift correction at every chord boundary
         if (_pendingIdx >= 0) {
-          // Passing chord just finished — land on the destination
+          // Passing chord just finished -- land on the destination
           st.idx      = _pendingIdx;
           _pendingIdx = -1;
           _passingChord = null;
@@ -3914,7 +4219,7 @@ _TOOLTIP_JS = """
     _accompTimer = setTimeout(_accompTick, 25);
   }
 
-  // Build note list for a chord symbol from JS — maps symbol to MIDI pitch classes
+  // Build note list for a chord symbol from JS -- maps symbol to MIDI pitch classes
   function _chordNotesFromSym(sym) {
     // Parse the symbol: root + quality suffix
     var rootPat = /^([A-G][b#]?)/;
@@ -3943,7 +4248,7 @@ _TOOLTIP_JS = """
   }
 
   function _readAccompChords() {
-    // First check JS palette state (_seqOrder / _selectedChords) — these are authoritative
+    // First check JS palette state (_seqOrder / _selectedChords) -- these are authoritative
     if (window._seqOrder && window._seqOrder.length > 0) {
       return window._seqOrder.map(function(sym){
         return {symbol:sym, label:sym, notes:_chordNotesFromSym(sym)};
@@ -3974,7 +4279,7 @@ _TOOLTIP_JS = """
     });
   }
 
-  // ── Tap Tempo ───────────────────────────────────────────────────────────
+  // -- Tap Tempo -----------------------------------------------------------
   var _tapTimes = [];
   window.tapTempo = function() {
     var now = performance.now();
@@ -4075,10 +4380,10 @@ _TOOLTIP_JS = """
     _accompRunning = false; window._accompRunning = false;
     if (_accompTimer) { clearTimeout(_accompTimer); _accompTimer = null; }
     _stopMidiClock();
-    var d = document.getElementById('accomp-now-playing'); if (d) d.textContent = '—';
+    var d = document.getElementById('accomp-now-playing'); if (d) d.textContent = '--';
   };
 
-  // ── MIDI output — stream to DAW (Logic Pro via IAC driver) ──────────────────
+  // -- MIDI output -- stream to DAW (Logic Pro via IAC driver) ------------------
   function _initMIDIOut() {
     if (!navigator.requestMIDIAccess) return;
     navigator.requestMIDIAccess({sysex:false}).then(function(access) {
@@ -4123,7 +4428,7 @@ _TOOLTIP_JS = """
     else _initMIDIOut();
   };
 
-  // ── Listen In ───────────────────────────────────────────────────────────────
+  // -- Listen In ---------------------------------------------------------------
   var _listenMode     = 'off';
   var _midiAccess     = null;
   var _midiNotes      = new Set();   // active pitch-classes from MIDI
@@ -4188,7 +4493,7 @@ _TOOLTIP_JS = """
     _listenStatus(noteStr + chordStr);
   }
 
-  // ── MIDI ────────────────────────────────────────────────────────────────────
+  // -- MIDI --------------------------------------------------------------------
   function _onMIDIMsg(ev) {
     if (_listenMode !== 'midi') return;
     var type = ev.data[0] & 0xF0, note = ev.data[1], vel = ev.data[2];
@@ -4209,11 +4514,11 @@ _TOOLTIP_JS = """
       var count = 0;
       access.inputs.forEach(function(inp) { inp.onmidimessage = _onMIDIMsg; count++; });
       access.onstatechange = function() { access.inputs.forEach(function(inp){ inp.onmidimessage = _onMIDIMsg; }); };
-      _listenStatus(count ? 'MIDI ready ('+count+' device'+(count>1?'s':'')+') — play to trigger' : 'No MIDI devices found');
+      _listenStatus(count ? 'MIDI ready ('+count+' device'+(count>1?'s':'')+') -- play to trigger' : 'No MIDI devices found');
     }, function() { _listenStatus('MIDI access denied'); });
   }
 
-  // ── Audio / Mic ─────────────────────────────────────────────────────────────
+  // -- Audio / Mic -------------------------------------------------------------
   function _autocorrelate(buf, sr) {
     var N = buf.length, H = Math.floor(N/2), rms = 0;
     for (var i=0; i<N; i++) rms += buf[i]*buf[i];
@@ -4251,7 +4556,7 @@ _TOOLTIP_JS = """
       var src = _audioCtx.createMediaStreamSource(stream);
       _pitchAnalyser = _audioCtx.createAnalyser(); _pitchAnalyser.fftSize = 2048;
       src.connect(_pitchAnalyser);
-      _listenStatus('Mic active — sing or play a note');
+      _listenStatus('Mic active -- sing or play a note');
       _pollPitch();
     }).catch(function(e) { _listenStatus('Mic denied: '+e.message); });
   }
@@ -4264,7 +4569,7 @@ _TOOLTIP_JS = """
     if (_listenStream)   { _listenStream.getTracks().forEach(function(t){t.stop();}); _listenStream=null; _pitchAnalyser=null; }
     _midiNotes.clear(); _midiOnsets = [];
     _listenBtnHighlight(mode);
-    if (mode === 'off') { _listenStatus('—'); return; }
+    if (mode === 'off') { _listenStatus('--'); return; }
     // Ensure audio context
     if (!_audioCtx) { var AC=window.AudioContext||window.webkitAudioContext; if(AC) _audioCtx=new AC(); }
     if (_audioCtx && _audioCtx.state==='suspended') _audioCtx.resume();
@@ -4278,7 +4583,7 @@ _TOOLTIP_JS = """
   _initMIDIOut();
 })();
 
-/* ── Loop Pedal ── */
+/* -- Loop Pedal -- */
 (function(){
   var _slots = {
     A: {buf:null, src:null, muted:false, recorder:null, chunks:[], startTime:0, loopLen:0},
@@ -4472,10 +4777,10 @@ _TOOLTIP_JS = """
       if (isDub) {
         _stopLoop(slot); // briefly stop while overdubbing start, re-starts on finish
         _slotClass(slot, 'overdub');
-        _status('Overdubbing '+slot+' — press ⊕ again to commit');
+        _status('Overdubbing '+slot+' -- press ⊕ again to commit');
       } else {
         _slotClass(slot, 'recording');
-        _status('Recording '+slot+' — press ⏺ again to finish');
+        _status('Recording '+slot+' -- press ⏺ again to finish');
       }
 
       rec.start(100);
@@ -4502,7 +4807,7 @@ _TOOLTIP_JS = """
 
   window._loopDub = function(slot, btn) {
     var s = _slots[slot];
-    if (!s.buf) { _status('Nothing to overdub on slot '+slot+' — record first'); return; }
+    if (!s.buf) { _status('Nothing to overdub on slot '+slot+' -- record first'); return; }
     if (s.recorder && s.recorder.state === 'recording') {
       btn.classList.remove('active');
       if (s._stop) s._stop();
@@ -4529,7 +4834,7 @@ _TOOLTIP_JS = """
     s.buf = null; s.recorder = null; s.chunks = []; s.muted = false;
     _slotClass(slot, '');
     var timeEl = document.querySelector('#loop-slot-'+slot+' .loop-slot-time');
-    if (timeEl) timeEl.textContent = '—';
+    if (timeEl) timeEl.textContent = '--';
     var canvas = document.querySelector('#loop-slot-'+slot+' .loop-wave');
     if (canvas) { var c=canvas.getContext('2d'); c.clearRect(0,0,canvas.width,canvas.height); }
     var btn = document.querySelector('#loop-slot-'+slot+' .loop-rec-btn');
@@ -4553,7 +4858,7 @@ _TOOLTIP_JS = """
   };
 })();
 
-/* ── Crystallize & Ghost Orchestra — pure JS, zero server roundtrip ── */
+/* -- Crystallize & Ghost Orchestra -- pure JS, zero server roundtrip -- */
 (function() {
 
   // Map Live Recorder mode names → Composer key string suffix
@@ -4583,7 +4888,7 @@ _TOOLTIP_JS = """
     return el ? parseFloat(el.value) || 120 : 120;
   }
 
-  // ── CRYSTALLIZE ────────────────────────────────────────────────────────────
+  // -- CRYSTALLIZE ------------------------------------------------------------
   // Stores session data in localStorage, then navigates to Composer.
   // ocNav reads localStorage on arrival and applies values via _applyComposerData.
 
@@ -4600,10 +4905,10 @@ _TOOLTIP_JS = """
     if (srcBtn) { srcBtn.disabled = false; srcBtn.classList.remove('loading'); }
   };
 
-  // ── DESCRIBE ───────────────────────────────────────────────────────────────
+  // -- DESCRIBE ---------------------------------------------------------------
   // Translates the live session into a natural-language Composer brief.
   // Unlike Crystallize (raw data), Describe builds a creative prompt the user
-  // can read, edit, and run — bridging improvisation and composition intent.
+  // can read, edit, and run -- bridging improvisation and composition intent.
 
   var _STYLE_MOOD = {
     'Jazz':'swinging jazz','Gospel':'soulful gospel','Soul':'deep soul',
@@ -4636,7 +4941,7 @@ _TOOLTIP_JS = """
 
     var prompt = tempoWord + ' ' + moodStr + ' in ' + key + ' at ' + Math.round(bpm) + ' BPM. ' +
       'Chord progression: ' + chords + '. ' +
-      'Orchestrate with rich ' + moodStr + ' textures — full arrangement.';
+      'Orchestrate with rich ' + moodStr + ' textures -- full arrangement.';
 
     try {
       localStorage.setItem('oc_describe', JSON.stringify({prompt:prompt, bpm:bpm, key:key, chords:chords}));
@@ -4645,7 +4950,7 @@ _TOOLTIP_JS = """
     if (srcBtn) { srcBtn.disabled = false; }
   };
 
-  // ── GHOST ORCHESTRA ────────────────────────────────────────────────────────
+  // -- GHOST ORCHESTRA --------------------------------------------------------
   // Additive orchestral layer that plays complementary voices UNDERNEATH the band.
 
   var _ghostActive = false;
@@ -4655,7 +4960,7 @@ _TOOLTIP_JS = """
   // Note name → pitch class
   var _GPC = {C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11};
 
-  // Self-contained string-pad synthesizer — uses raw Web Audio, no IIFE-1 dependency
+  // Self-contained string-pad synthesizer -- uses raw Web Audio, no IIFE-1 dependency
   function _ghostPlayPad(midi, t, dur, vel, ctx, dest) {
     var freq = 440 * Math.pow(2, (midi - 69) / 12);
     var master = ctx.createGain();
@@ -4703,7 +5008,7 @@ _TOOLTIP_JS = """
       _ghostPlayPad(36 + rootPc,  t,        barDur * 1.06, 0.16, ctx, dest);
       _ghostPlayPad(48 + fifthPc, t + 0.05, barDur * 1.06, 0.12, ctx, dest);
     } else {
-      // strings_ens, vibes, acoustic, default — cello/viola/violin spread
+      // strings_ens, vibes, acoustic, default -- cello/viola/violin spread
       _ghostPlayPad(36 + rootPc,  t,        barDur * 1.06, 0.20, ctx, dest);
       _ghostPlayPad(48 + fifthPc, t + 0.08, barDur * 1.04, 0.15, ctx, dest);
       _ghostPlayPad(60 + rootPc,  t + 0.16, barDur * 1.02, 0.10, ctx, dest);
@@ -4799,7 +5104,7 @@ _TOOLTIP_JS = """
 
 })();
 
-/* ── Custom palette picker ── */
+/* -- Custom palette picker -- */
 (function(){
   var NOTES = [
     {label:'C',acc:false},{label:'C#',acc:true},{label:'D',acc:false},
@@ -4813,7 +5118,7 @@ _TOOLTIP_JS = """
     'Major Pentatonic','Minor Pentatonic','Blues Scale','Whole Tone',
     'Diminished (HW)','Hungarian Minor','Phrygian Dominant'
   ];
-  // Mode intervals (semitones from root) — computed client-side, no Gradio roundtrip needed
+  // Mode intervals (semitones from root) -- computed client-side, no Gradio roundtrip needed
   var MODE_INTERVALS = {
     'Major (Ionian)':         [0,2,4,5,7,9,11],
     'Natural Minor (Aeolian)':[0,2,3,5,7,8,10],
@@ -4954,7 +5259,7 @@ _TOOLTIP_JS = """
     };
   }
 
-  // ── Tile grid: JS-native, no Gradio roundtrip ─────────────────────
+  // -- Tile grid: JS-native, no Gradio roundtrip ---------------------
   var _QUALITY_COLOR = {
     major:'T', minor:'P', maj7:'T', min7:'P', dom7:'D', dom9:'D',
     hdim:'B', dim:'B', dim7:'B', aug:'B', maj9:'T', min9:'P',
@@ -5061,7 +5366,7 @@ _TOOLTIP_JS = """
     return found;
   }
 
-  // Initial tile build — triggered once DOM is ready
+  // Initial tile build -- triggered once DOM is ready
   function _watchPicker() {
     var grid = document.getElementById('pal-tile-grid');
     if (!grid) { setTimeout(_watchPicker, 400); return; }
@@ -5081,7 +5386,7 @@ _TOOLTIP_JS = """
   else _init();
 })();
 
-/* ── Studio tab switching ── */
+/* -- Studio tab switching -- */
 function studioShowTab(tab) {
   document.querySelectorAll('.studio-panel').forEach(function(p){ p.classList.remove('visible'); });
   document.querySelectorAll('.studio-tab-btn').forEach(function(b){ b.classList.remove('active'); });
@@ -5104,12 +5409,12 @@ function studioShowTab(tab) {
   });
 })();
 
-/* ── Home/section navigation ── */
+/* -- Home/section navigation -- */
 (function(){
   function _show(id){ var el=document.getElementById(id); if(el) el.style.display=''; }
   function _hide(id){ var el=document.getElementById(id); if(el) el.style.display='none'; }
 
-  // Gradio Svelte dispatch — the only reliable way to set component values
+  // Gradio Svelte dispatch -- the only reliable way to set component values
   function _gradioSet(el, value) {
     if (!el) return;
     // Try Svelte internal dispatch first
@@ -5221,7 +5526,7 @@ _CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Tahoma:wght@400;700&display=swap');
 
 /* ═══════════════════════════════════════════════
-   DESIGN TOKENS — DAW / Pro Audio (2000s)
+   DESIGN TOKENS -- DAW / Pro Audio (2000s)
    ═══════════════════════════════════════════════ */
 :root {
   --bg:          #1e1e1e;
@@ -5276,7 +5581,7 @@ gradio-app {
 }
 
 /* ═══════════════════════════════════════════════
-   PANELS / BLOCKS — beveled raised surface
+   PANELS / BLOCKS -- beveled raised surface
    ═══════════════════════════════════════════════ */
 .block, .form, .gr-group, .gr-box {
   background: var(--panel) !important;
@@ -5307,7 +5612,7 @@ gradio-app {
 }
 strong { color: var(--text) !important; }
 
-/* ── Labels ── */
+/* -- Labels -- */
 label, label span {
   color: var(--text-label) !important;
   font-size: 10px !important;
@@ -5318,7 +5623,7 @@ label, label span {
 }
 
 /* ═══════════════════════════════════════════════
-   INPUTS — sunken inset look
+   INPUTS -- sunken inset look
    ═══════════════════════════════════════════════ */
 textarea, input[type="text"], input[type="number"],
 .gr-textbox textarea, .gr-input input {
@@ -5342,7 +5647,7 @@ textarea:focus, input[type="text"]:focus, input[type="number"]:focus {
 }
 
 /* ═══════════════════════════════════════════════
-   DROPDOWNS — Windows-style select
+   DROPDOWNS -- Windows-style select
    ═══════════════════════════════════════════════ */
 select, .gr-dropdown select {
   background: var(--sunken) !important;
@@ -5357,12 +5662,12 @@ select, .gr-dropdown select {
 }
 
 /* ═══════════════════════════════════════════════
-   SLIDERS — accent blue track
+   SLIDERS -- accent blue track
    ═══════════════════════════════════════════════ */
 input[type="range"] { accent-color: var(--accent) !important; cursor: pointer; }
 
 /* ═══════════════════════════════════════════════
-   BUTTONS — beveled pill, Windows XP era
+   BUTTONS -- beveled pill, Windows XP era
    ═══════════════════════════════════════════════ */
 .gr-button, button.gr-button {
   font-family: var(--font-ui) !important;
@@ -5427,7 +5732,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 .gr-check-radio { color: var(--text-dim) !important; font-size: 11px !important; }
 
 /* ═══════════════════════════════════════════════
-   ACCORDIONS — title bar style
+   ACCORDIONS -- title bar style
    ═══════════════════════════════════════════════ */
 .gr-accordion {
   border-top: 1px solid var(--border-hi) !important;
@@ -5454,7 +5759,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 }
 
 /* ═══════════════════════════════════════════════
-   DATAFRAME — grid / table
+   DATAFRAME -- grid / table
    ═══════════════════════════════════════════════ */
 .gr-dataframe table {
   background: var(--sunken) !important;
@@ -5530,7 +5835,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   justify-content: center;
 }
 
-/* ── Live Recorder card — RED identity ── */
+/* -- Live Recorder card -- RED identity -- */
 #card-live {
   width: 340px;
   height: 300px;
@@ -5572,7 +5877,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   box-shadow: inset 3px 3px 10px rgba(0,0,0,0.6);
 }
 
-/* ── Orchestral Composer card — BLUE identity ── */
+/* -- Orchestral Composer card -- BLUE identity -- */
 #card-composer {
   width: 340px;
   height: 300px;
@@ -5614,7 +5919,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   box-shadow: inset 3px 3px 10px rgba(0,0,0,0.6);
 }
 
-/* ── Card internals ── */
+/* -- Card internals -- */
 .home-card-icon {
   font-size: 52px;
   line-height: 1;
@@ -5642,7 +5947,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 #card-live .home-card-desc { color: #8a5555; }
 #card-composer .home-card-desc { color: #3a5580; }
 
-/* ── click-hint label under each card ── */
+/* -- click-hint label under each card -- */
 .home-card-hint {
   font-family: var(--font-ui);
   font-size: 9px;
@@ -5759,7 +6064,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 }
 
 /* ═══════════════════════════════════════════════
-   STUDIO HERO — split panel
+   STUDIO HERO -- split panel
    ═══════════════════════════════════════════════ */
 #studio-hero {
   background: var(--panel-lo);
@@ -5831,11 +6136,11 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 #palette-hero label span, #palette-hero .block label, #palette-hero .gr-markdown p { color: var(--text-dim) !important; }
 #palette-hero input, #palette-hero select { background: var(--sunken) !important; color: var(--text) !important; border-color: var(--border-lo) !important; }
 
-/* Hide native Gradio palette controls — replaced by custom picker */
+/* Hide native Gradio palette controls -- replaced by custom picker */
 #pal-gradio-controls, #pal-custom-gradio { display: none !important; }
 #chord_picker { display: none !important; }
 
-/* ── Custom palette picker ─────────────────────────────────────────── */
+/* -- Custom palette picker ------------------------------------------- */
 #pal-picker { padding: 4px 0 12px; }
 .pal-section { margin-bottom: 14px; }
 .pal-label { font-size: 11px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase;
@@ -5854,7 +6159,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 .pal-mode:hover { color: var(--text, #ddd); border-color: var(--border-hi, #888); }
 .pal-mode.on { background: #185FA5; border-color: #378ADD; color: #fff; }
 
-/* ── Custom chord tile grid ─────────────────────────────────────────── */
+/* -- Custom chord tile grid ------------------------------------------- */
 #pal-tile-grid { display: flex; flex-wrap: wrap; gap: 6px; padding: 4px 0 10px; min-height: 30px; }
 .pal-tile { display: flex; flex-direction: column; align-items: center; justify-content: center;
   width: 76px; height: 62px; border-radius: 8px; cursor: pointer; transition: all .1s;
@@ -5885,7 +6190,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   color: var(--text-dim, #888); margin-bottom: 6px; margin-top: 4px; }
 
 /* ═══════════════════════════════════════════════
-   LIVE ACCOMPANIMENT — hardware console
+   LIVE ACCOMPANIMENT -- hardware console
    ═══════════════════════════════════════════════ */
 #live-console {
   background: var(--panel-lo);
@@ -5955,7 +6260,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 .dens-btn:hover { background: var(--panel); color: var(--text); }
 .dens-btn.active { background: #2a4a6b; color: #6db3f2; border-color: #4a7fb5; }
 
-/* Transport buttons — hardware style */
+/* Transport buttons -- hardware style */
 .ac-btn {
   border-radius: var(--radius-sm);
   padding: 7px 16px;
@@ -6051,7 +6356,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 .mixer-strip .ac-lbl { font-size: 8px !important; margin-bottom: 5px; }
 
 /* Listen buttons */
-/* ── Loop Pedal ── */
+/* -- Loop Pedal -- */
 .loop-slot {
   background: var(--sunken);
   border: 1px solid var(--border-mid);
@@ -6116,7 +6421,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 }
 .lst-btn:hover:not(.active) { color: var(--text-bright); filter: brightness(1.15); }
 
-/* ── Bridge buttons: Crystallize & Ghost Orchestra ── */
+/* -- Bridge buttons: Crystallize & Ghost Orchestra -- */
 .bridge-btn {
   display: flex; flex-direction: column; align-items: flex-start;
   gap: 1px; padding: 10px 14px; border-radius: 8px; cursor: pointer;
@@ -6130,7 +6435,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 .bridge-btn-label { font-size: 12px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
 .bridge-btn-sub { font-size: 9px; font-weight: 400; opacity: 0.65; letter-spacing: .03em; }
 
-/* Crystallize — warm gold/amber */
+/* Crystallize -- warm gold/amber */
 .crystallize-btn {
   background: linear-gradient(135deg, #1a1200 0%, #2a1e00 100%);
   border-color: #6b4f00; color: #f0c040;
@@ -6140,7 +6445,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   border-color: #c89a20; box-shadow: 0 0 14px rgba(200,150,0,0.25);
 }
 
-/* Ghost Orchestra — electric blue/violet */
+/* Ghost Orchestra -- electric blue/violet */
 .ghost-btn {
   background: linear-gradient(135deg, #080e1a 0%, #0d1528 100%);
   border-color: #1e3a6a; color: #7ab4ff;
@@ -6186,7 +6491,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   padding: 2px 8px;
 }
 
-/* Generate button — prominent DAW-style */
+/* Generate button -- prominent DAW-style */
 #generate-btn-wrap .gr-button.primary {
   font-family: var(--font-ui) !important;
   font-size: 13px !important;
@@ -6207,7 +6512,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   background: linear-gradient(to bottom, #1e4db0 0%, #2a5cc8 51%, #4a7fe8 100%) !important;
 }
 
-/* Arrange bridge button — teal accent to signal cross-module action */
+/* Arrange bridge button -- teal accent to signal cross-module action */
 #arrange-btn {
   background: linear-gradient(to bottom, #1a5a4a 0%, #0f3a30 50%, #0a2a22 51%, #153d30 100%) !important;
   border-top: 1px solid #33aa88 !important;
@@ -6234,7 +6539,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   border-bottom-color: #33aa88 !important;
 }
 
-/* Output status — LCD readout */
+/* Output status -- LCD readout */
 #out-status textarea {
   font-family: var(--font-mono) !important;
   font-size: 11px !important;
@@ -6248,7 +6553,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 }
 
 /* ═══════════════════════════════════════════════
-   SCROLLBARS — thin dark
+   SCROLLBARS -- thin dark
    ═══════════════════════════════════════════════ */
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: var(--sunken); border: 1px solid var(--border-lo); }
@@ -6288,7 +6593,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   padding: 0 6px;
 }
 
-/* ── Key + Tempo always-visible group ── */
+/* -- Key + Tempo always-visible group -- */
 #key-tempo-group {
   background: var(--panel-lo) !important;
   border-top: 1px solid var(--border-lo) !important;
@@ -6302,7 +6607,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 }
 #key-tempo-group label { color: var(--accent-hi) !important; }
 
-/* ── Indian mode banner ── */
+/* -- Indian mode banner -- */
 #indian-mode-banner .gr-markdown, #indian-mode-banner p {
   background: rgba(26, 68, 34, 0.5) !important;
   border-top: 1px solid var(--tape-green) !important;
@@ -6320,7 +6625,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 
 with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
 
-    # ── Home screen overlay ───────────────────────────────────────────────────
+    # -- Home screen overlay ---------------------------------------------------
     gr.HTML("""
 <div id="home-screen">
   <div id="home-wordmark">ORCHESTRAL<span>COMPOSER</span></div>
@@ -6344,17 +6649,17 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
 """)
     ollama_status = gr.Markdown("_Checking Ollama…_", visible=False)
 
-    # ── LIVE RECORDER SECTION ─────────────────────────────────────────────────
+    # -- LIVE RECORDER SECTION -------------------------------------------------
     with gr.Group(elem_id="section-live"):
         gr.HTML("""
     <div class="section-topbar">
       <button class="section-back-btn" onclick="window.ocGoHome()">&#9664; HOME</button>
       <div class="section-topbar-title">&#9679;&nbsp; LIVE RECORDER</div>
-      <div id="oc-ollama-status" class="section-topbar-status">—</div>
+      <div id="oc-ollama-status" class="section-topbar-status">--</div>
     </div>
     """)
     
-        # ── Studio Hero — side-by-side tab panel ─────────────────────────────────
+        # -- Studio Hero -- side-by-side tab panel ---------------------------------
         gr.HTML("""
     <div id="studio-hero">
     
@@ -6381,7 +6686,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     
         with gr.Group(elem_id="palette-hero"):
             gr.HTML('<div class="studio-panel visible" id="panel-palette">')
-            # Custom palette picker UI — note buttons + mode chips replace dropdowns
+            # Custom palette picker UI -- note buttons + mode chips replace dropdowns
             gr.HTML('''<div id="pal-picker">
   <div class="pal-section">
     <div class="pal-label">Root</div>
@@ -6392,11 +6697,11 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     <div class="pal-modes" id="pal-mode-row"></div>
   </div>
   <div class="pal-section" id="pal-custom-wrap">
-    <div class="pal-label">Custom intervals <span style="font-weight:400;opacity:.6">(overrides mode — semitones from root)</span></div>
+    <div class="pal-label">Custom intervals <span style="font-weight:400;opacity:.6">(overrides mode -- semitones from root)</span></div>
     <input id="pal-custom-input" type="text" placeholder="e.g. 0 2 3 6 7 8 10" style="width:100%;padding:6px 10px;border-radius:6px;border:.5px solid var(--color-border-secondary,#555);background:var(--color-background-secondary,#222);color:inherit;font-family:inherit;font-size:13px"/>
   </div>
 </div>''')
-            # Hidden Gradio controls — driven by JS above
+            # Hidden Gradio controls -- driven by JS above
             with gr.Row(elem_id="pal-gradio-controls"):
                 palette_root = gr.Dropdown(
                     ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B",
@@ -6410,7 +6715,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
             custom_intervals = gr.Textbox(
                 value="",
                 label="Custom intervals (overrides mode above)",
-                placeholder="e.g.  0 2 3 6 7 8 10  — semitones from root, space-separated",
+                placeholder="e.g.  0 2 3 6 7 8 10  -- semitones from root, space-separated",
                 lines=1, elem_id="pal-custom-gradio",
             )
             # Custom tile grid overlays the CheckboxGroup
@@ -6433,7 +6738,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                 use_flat_prog = gr.Checkbox(
                     label="Use palette selection as flat progression",
                     value=False, scale=1,
-                    info="Bypasses the chord text field — pipeline uses your checked chords directly.",
+                    info="Bypasses the chord text field -- pipeline uses your checked chords directly.",
                 )
     
             with gr.Accordion("Edit / add mode or raga", open=False):
@@ -6448,7 +6753,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                         placeholder="e.g. Desh  or  My Scale",
                     )
                     intervals_edit = gr.Textbox(
-                        label="Intervals — semitones from root (0–11, space-separated)",
+                        label="Intervals -- semitones from root (0–11, space-separated)",
                         scale=4,
                         placeholder="e.g.  0 2 4 5 7 9 10 11",
                     )
@@ -6458,7 +6763,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                     delete_mode_btn = gr.Button("Delete from database",   variant="stop",    size="sm", scale=1)
                 mode_edit_status = gr.Textbox(label="", interactive=False, lines=1, show_label=False)
     
-        # ── Live Accompaniment ────────────────────────────────────────────────────
+        # -- Live Accompaniment ----------------------------------------------------
     
         with gr.Group():
             gr.HTML('</div>') # close panel-palette
@@ -6486,34 +6791,34 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         <div style="flex:2;min-width:110px">
           <div class="ac-lbl">Style</div>
           <select id="ctrl-style" class="ac-sel">
-            <optgroup label="── Piano / Keys ──">
+            <optgroup label="-- Piano / Keys --">
               <option>Pop</option><option>Ballad</option><option>Indie Pop</option>
               <option>Singer-Songwriter</option><option>Rhodes</option><option>Lo-Fi</option>
               <option>Honky Tonk</option>
             </optgroup>
-            <optgroup label="── Soul / R&amp;B ──">
+            <optgroup label="-- Soul / R&amp;B --">
               <option>R&amp;B</option><option>Neo Soul</option><option>Soul</option>
               <option>Motown</option><option>Gospel</option><option>Worship</option>
               <option>New Soul</option>
             </optgroup>
-            <optgroup label="── Jazz ──">
+            <optgroup label="-- Jazz --">
               <option>Jazz</option><option>Smooth Jazz</option><option>Jazz Shell</option>
               <option>Brushed Trio</option><option>Rhodes Jazz</option>
               <option>Vibraphone</option><option>Swing</option>
             </optgroup>
-            <optgroup label="── Funk / Groove ──">
+            <optgroup label="-- Funk / Groove --">
               <option>Funk</option><option>Funk Chop</option><option>Disco Pop</option>
               <option>Brass</option>
             </optgroup>
-            <optgroup label="── Guitar ──">
+            <optgroup label="-- Guitar --">
               <option>Acoustic</option><option>Country</option>
             </optgroup>
-            <optgroup label="── World / Latin ──">
+            <optgroup label="-- World / Latin --">
               <option>Bossa Nova</option><option>Samba</option><option>Latin</option>
               <option>Reggae</option><option>Blues</option><option>Waltz</option>
               <option>Tropical</option>
             </optgroup>
-            <optgroup label="── Cinematic ──">
+            <optgroup label="-- Cinematic --">
               <option>Cinematic</option><option>Pad</option>
               <option>Arpeggio Up</option><option>Arpeggio Down</option>
             </optgroup>
@@ -6575,7 +6880,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         <button id="tap-btn" class="ac-btn btn-tap"
           onclick="window.tapTempo&&window.tapTempo()">Tap</button>
         <div id="now-playing-strip">
-          Now playing: <span id="accomp-now-playing">—</span>
+          Now playing: <span id="accomp-now-playing">--</span>
         </div>
       </div>
     
@@ -6705,7 +7010,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     
       <!-- Listen In -->
       <div style="background:var(--ink);border:1px solid var(--divider);border-radius:var(--radius-sm);padding:11px 14px">
-        <!-- ── Loop Pedal ── -->
+        <!-- -- Loop Pedal -- -->
         <div class="lc-section-title" style="margin-top:14px">🔴&nbsp; Loop Pedal</div>
         <div id="looper-wrap">
           <div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;margin-bottom:8px">
@@ -6713,7 +7018,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
             <div id="loop-slot-A" class="loop-slot" data-slot="A">
               <div class="loop-slot-label">A</div>
               <canvas class="loop-wave" width="90" height="28"></canvas>
-              <div class="loop-slot-time">—</div>
+              <div class="loop-slot-time">--</div>
               <div style="display:flex;gap:3px;margin-top:4px">
                 <button class="loop-rec-btn" onclick="window._loopRec('A',this)">⏺</button>
                 <button class="loop-dub-btn" onclick="window._loopDub('A',this)">⊕</button>
@@ -6724,7 +7029,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
             <div id="loop-slot-B" class="loop-slot" data-slot="B">
               <div class="loop-slot-label">B</div>
               <canvas class="loop-wave" width="90" height="28"></canvas>
-              <div class="loop-slot-time">—</div>
+              <div class="loop-slot-time">--</div>
               <div style="display:flex;gap:3px;margin-top:4px">
                 <button class="loop-rec-btn" onclick="window._loopRec('B',this)">⏺</button>
                 <button class="loop-dub-btn" onclick="window._loopDub('B',this)">⊕</button>
@@ -6735,7 +7040,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
             <div id="loop-slot-C" class="loop-slot" data-slot="C">
               <div class="loop-slot-label">C</div>
               <canvas class="loop-wave" width="90" height="28"></canvas>
-              <div class="loop-slot-time">—</div>
+              <div class="loop-slot-time">--</div>
               <div style="display:flex;gap:3px;margin-top:4px">
                 <button class="loop-rec-btn" onclick="window._loopRec('C',this)">⏺</button>
                 <button class="loop-dub-btn" onclick="window._loopDub('C',this)">⊕</button>
@@ -6758,10 +7063,10 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
               </div>
             </div>
           </div>
-          <div id="loop-status" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--amber);min-height:16px">Ready — press ⏺ on any slot to record</div>
+          <div id="loop-status" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--amber);min-height:16px">Ready -- press ⏺ on any slot to record</div>
         </div>
 
-        <!-- ── Bridge buttons ── -->
+        <!-- -- Bridge buttons -- -->
         <div id="bridge-btns" style="display:flex;gap:10px;margin-top:14px;flex-wrap:wrap">
           <button id="crystallize-btn" class="bridge-btn crystallize-btn"
             onclick="window._crystallize && window._crystallize(this)">
@@ -6776,7 +7081,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
             <span class="bridge-btn-sub">Summon AI orchestra underneath</span>
           </button>
         </div>
-        <!-- Ghost Orchestra result panel — hidden until generation completes -->
+        <!-- Ghost Orchestra result panel -- hidden until generation completes -->
         <div id="ghost-result-panel" style="display:none;margin-top:10px;border:1px solid #2a3a5a;border-radius:8px;padding:10px;background:#0a0e1a">
           <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
             <span style="font-size:11px;font-weight:700;color:#5599ff;letter-spacing:.08em;text-transform:uppercase">Ghost Orchestra</span>
@@ -6811,7 +7116,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
             <label style="cursor:pointer;color:var(--mist)"><input type="radio" name="listen-resp" value="beat"  style="accent-color:#c8874a"> Beat</label>
             <label style="cursor:pointer;color:var(--mist)"><input type="radio" name="listen-resp" value="both"  style="accent-color:#c8874a"> Both</label>
           </div>
-          <div id="listen-status" style="flex:1;font-family:'JetBrains Mono',monospace;color:var(--amber);font-size:11px;text-align:right;min-width:80px">—</div>
+          <div id="listen-status" style="flex:1;font-family:'JetBrains Mono',monospace;color:var(--amber);font-size:11px;text-align:right;min-width:80px">--</div>
         </div>
       </div>
     
@@ -6821,23 +7126,23 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     
 
 
-    # ── Bridge: Live Recorder → Composer ─────────────────────────────────────
+    # -- Bridge: Live Recorder → Composer -------------------------------------
     # Hidden textboxes receive JSON payloads from JS; hidden buttons trigger Python bridges
     with gr.Group(visible=False, elem_id="bridge-hidden"):
         _crystallize_payload = gr.Textbox(value="", interactive=True, visible=False, elem_id="crystallize-payload")
         _crystallize_trigger = gr.Button("crystallize-trigger", visible=False, elem_id="crystallize-trigger")
         _ghost_payload       = gr.Textbox(value="", interactive=True, visible=False, elem_id="ghost-payload")
         _ghost_trigger       = gr.Button("ghost-trigger",       visible=False, elem_id="ghost-trigger")
-        # Ghost result panel — receives the MIDI player HTML
+        # Ghost result panel -- receives the MIDI player HTML
         ghost_result_out     = gr.HTML(value="", visible=False, elem_id="ghost-result-out")
 
-    # ── ORCHESTRAL COMPOSER SECTION ───────────────────────────────────────────
+    # -- ORCHESTRAL COMPOSER SECTION -------------------------------------------
     with gr.Group(elem_id="section-composer"):
         gr.HTML("""
     <div class="section-topbar">
       <button class="section-back-btn" onclick="window.ocGoHome()">&#9664; HOME</button>
       <div class="section-topbar-title">&#9654;&nbsp; ORCHESTRAL COMPOSER</div>
-      <div id="oc-ollama-status-comp" class="section-topbar-status">—</div>
+      <div id="oc-ollama-status-comp" class="section-topbar-status">--</div>
     </div>
     <div id="composer-studio">
       <div id="composer-studio-header">
@@ -6848,7 +7153,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     </div>
     """)
     
-        # ── Single-column layout ─────────────────────────────────────────────────
+        # -- Single-column layout -------------------------------------------------
         gr.HTML('<div class="oc-section-div"><span>1 · Melody</span></div>')
     
         melody_source = gr.Radio(
@@ -6902,7 +7207,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     
         gr.HTML('<div class="oc-section-div"><span>2 · Composition</span></div>')
     
-        # Preset + Key + Tempo (always visible — the three most essential parameters)
+        # Preset + Key + Tempo (always visible -- the three most essential parameters)
         with gr.Row():
             preset_name = gr.Dropdown(
                 list(INSTRUMENT_PRESETS.keys()), value="Jazz Quartet",
@@ -6935,23 +7240,23 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                     list(TIME_SIGNATURES.keys()), value="4/4", label="Time sig", scale=1,
                 )
     
-        # Indian mode banner — shown when an Indian/raga preset is selected
+        # Indian mode banner -- shown when an Indian/raga preset is selected
         indian_banner = gr.Markdown("", visible=False, elem_id="indian-mode-banner")
     
-        # Chord input (hidden for Indian presets — replaced by raga drone)
+        # Chord input (hidden for Indian presets -- replaced by raga drone)
         with gr.Group(elem_id="chord-group") as chord_group:
             gr.Markdown("**Chord progression**  _(from palette above, or type your own)_")
             chord_input = gr.Textbox(
                 value="Dm7 G7 Cmaj7 Am7",
                 label="Chord symbols  (or Roman numerals: I7-iii-V)",
-                placeholder="Dm7  G7  Cmaj7  Am7  —  or  I7-iii-V  (resolved to current key)", lines=1,
+                placeholder="Dm7  G7  Cmaj7  Am7  --  or  I7-iii-V  (resolved to current key)", lines=1,
             )
             beats_per_chord = gr.Slider(
                 0.5, 8.0, value=4.0, step=0.5, label="Beats per chord",
             )
     
-        # Song structure — top-level so it's always findable
-        with gr.Accordion("Song structure  — form builder", open=False):
+        # Song structure -- top-level so it's always findable
+        with gr.Accordion("Song structure  -- form builder", open=False):
             gr.Markdown(
                 "Add rows to define sections (any label). Korvai bridges are configured in the Korvai slots below. "
                 "Form examples: `A B A` · `A K B L A` · `K` (korvai only) · `A B K1 A B K2 A`."
@@ -6961,13 +7266,13 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
             )
             form_status = gr.Markdown("")
     
-            gr.Markdown("**Quick section builder** — pick a named progression and apply it to a section:")
+            gr.Markdown("**Quick section builder** -- pick a named progression and apply it to a section:")
             with gr.Row():
                 sec_quick_label = gr.Textbox(label="Label", placeholder="A", scale=1, lines=1)
                 sec_quick_bars  = gr.Number(label="Bars", value=8, scale=1)
                 sec_quick_prog  = gr.Dropdown(
-                    ["— pick —"] + PROGRESSION_NAMES,
-                    value="— pick —", label="Progression", scale=3,
+                    ["-- pick --"] + PROGRESSION_NAMES,
+                    value="-- pick --", label="Progression", scale=3,
                 )
                 sec_quick_btn   = gr.Button("→ Add / update", size="sm", scale=1)
     
@@ -6976,12 +7281,12 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                 datatype=["str", "number", "str"],
                 value=[["A", 8, ""], ["B", 8, ""]],
                 row_count=(2, "dynamic"),
-                label="Sections — edit rows or add new ones; labels appear in the Form above",
+                label="Sections -- edit rows or add new ones; labels appear in the Form above",
                 interactive=True,
             )
     
             gr.Markdown(
-                "---\n**Korvai definitions** — one row per korvai bridge; add as many as you need. "
+                "---\n**Korvai definitions** -- one row per korvai bridge; add as many as you need. "
                 "Label must match the Form. "
                 "Phrase / connector: syllables (`ta ka dhi mi`) **or numbers** "
                 "(`8` · `5, 4, 3` gopuccha · `1, 1, 1` spaced). "
@@ -7000,7 +7305,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                     ["K2", "ta ka dhi mi ta ka dhi mi ta ka dhi mi", "ta ka dhi mi", "4", "n", 32, ""],
                 ],
                 row_count=(2, "dynamic"),
-                label="Korvai definitions — add rows freely",
+                label="Korvai definitions -- add rows freely",
                 interactive=True,
             )
             korvai_status = gr.Markdown("_Add korvai rows above to see matra counts._")
@@ -7025,8 +7330,8 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     
             with gr.Row():
                 prog_dropdown = gr.Dropdown(
-                    ["— pick a progression —"] + PROGRESSION_NAMES,
-                    value="— pick a progression —",
+                    ["-- pick a progression --"] + PROGRESSION_NAMES,
+                    value="-- pick a progression --",
                     label="Common progressions", scale=3,
                 )
                 prog_apply_btn = gr.Button("→ Use", size="sm", scale=1)
@@ -7036,7 +7341,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                 with gr.Row():
                     use_sec_dom = gr.Checkbox(
                         label="Secondary dominants", value=False,
-                        info="V7/X before non-tonic chords — forward motion.",
+                        info="V7/X before non-tonic chords -- forward motion.",
                     )
                     use_auto_seventh = gr.Checkbox(
                         label="Auto 7ths", value=True,
@@ -7078,7 +7383,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                     info="0 = mechanical · 0.35 = natural (default) · 0.7+ = loose",
                 )
     
-        # ── Generate + output ────────────────────────────────────────────────────
+        # -- Generate + output ----------------------------------------------------
         gr.HTML('<div class="oc-section-div"><span>3 · Generate</span></div>')
         with gr.Row(elem_id="generate-btn-wrap"):
             generate_btn = gr.Button("Generate Arrangement", variant="primary", size="lg", scale=4)
@@ -7087,7 +7392,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         out_player = gr.HTML(label="Preview & playback")
         out_status = gr.Textbox(
             label="Status", lines=6, interactive=False,
-            placeholder="Hit Generate — output appears here.",
+            placeholder="Hit Generate -- output appears here.",
             elem_id="out-status",
         )
         out_file = gr.File(label="Download MIDI", file_types=[".mid"])
@@ -7117,9 +7422,9 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     
 
 
-    # ── Event wiring ────────────────────────────────────────────────────────
+    # -- Event wiring --------------------------------------------------------
 
-    # Korvai table — live matra/beat status for every defined row
+    # Korvai table -- live matra/beat status for every defined row
     def _korvai_table_status(kv_data, tempo_bpm):
         rows = _table_to_rows_korvai(kv_data)
         bpm  = max(20.0, float(tempo_bpm or 90))
@@ -7169,10 +7474,10 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     manual_tempo.change(_korvai_table_status, inputs=[korvai_table, manual_tempo], outputs=[korvai_status])
     korvai_rand_btn.click(_randomize_korvai_table, inputs=[korvai_table, manual_tempo], outputs=[korvai_table])
 
-    # Section quick-builder — resolves a named progression and upserts a row
+    # Section quick-builder -- resolves a named progression and upserts a row
     def _sec_quick_add(label, bars, prog_name, key, current_table):
         label = (label or "").strip().upper()
-        if not label or str(prog_name or "").startswith("—"):
+        if not label or str(prog_name or "").startswith("--"):
             return gr.update()
         chords = progression_to_chords(prog_name, key or "C major")
         if not chords:
@@ -7225,7 +7530,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         lambda m: gr.update(visible=(m == "Manual")), inputs=key_mode, outputs=manual_key,
     )
 
-    # Indian preset — show banner, hide chord/western-harmony groups
+    # Indian preset -- show banner, hide chord/western-harmony groups
     _INDIAN_PRESETS_UI = frozenset({
         "Carnatic Ensemble", "Bollywood Golden Era", "Bollywood Modern",
         "Sufi / Qawwali", "Koothu / Folk", "Dholak Party",
@@ -7235,7 +7540,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     def _on_preset_change(preset):
         is_indian = preset in _INDIAN_PRESETS_UI
         banner_md = (
-            "**Raga mode active** — chord progression replaced by Sa–Pa drone. "
+            "**Raga mode active** -- chord progression replaced by Sa–Pa drone. "
             "Set Key as `Note Raga` e.g. `D Shankarabharanam` or `G Yaman`. "
             "Harmonic enrichment has no effect in this mode."
             if is_indian else ""
@@ -7253,13 +7558,13 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
 
     # Progression dropdown → chord_input
     def _apply_prog(prog_name, key):
-        if prog_name.startswith("—"):
+        if prog_name.startswith("--"):
             return gr.update()
         return gr.update(value=" ".join(progression_to_chords(prog_name, key or "C major")))
 
     prog_apply_btn.click(_apply_prog, inputs=[prog_dropdown, manual_key], outputs=[chord_input])
 
-    # Form validation — live feedback when form, sections, or korvai table changes
+    # Form validation -- live feedback when form, sections, or korvai table changes
     def _validate_form_fn(form_str, sec_data, kv_data):
         form = parse_form(form_str or "")
         if not form:
@@ -7268,7 +7573,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         defined |= {row[0] for row in _table_to_rows_korvai(kv_data) if row[0]}
         undefined = [l for l in form if l not in defined]
         if undefined:
-            return f"⚠ Not defined: **{', '.join(undefined)}** — add rows to the sections or korvai table"
+            return f"⚠ Not defined: **{', '.join(undefined)}** -- add rows to the sections or korvai table"
         return f"✓  {' → '.join(form)}"
 
     _form_val_inputs = [form_input, section_table, korvai_table]
@@ -7312,7 +7617,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         outputs=[palette_mode, mode_edit_status],
     )
 
-    # Main generate button — show Stop while running, restore when done
+    # Main generate button -- show Stop while running, restore when done
     _pipeline_inputs = [
         melody_source, audio_input,
         pitch_tracker,
@@ -7362,10 +7667,10 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         outputs=[out_player, out_file, out_status],
     )
 
-    # Startup check — feeds the hidden markdown (for wiring) + status box
+    # Startup check -- feeds the hidden markdown (for wiring) + status box
     def _startup_check():
         ok, msg = check_ollama()
-        badge = f"**{'✓' if ok else '⚠'} {msg}**" if ok else f"⚠ {msg} — AI melody unavailable"
+        badge = f"**{'✓' if ok else '⚠'} {msg}**" if ok else f"⚠ {msg} -- AI melody unavailable"
         status_txt = f"{'✓' if ok else '✗'} {msg}\n\nReady."
         return badge, status_txt
 
@@ -7377,7 +7682,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
           setTimeout(function() {
             var md = document.querySelector('#component-4 p, .gr-markdown p');
             var pill = document.getElementById('oc-ollama-status');
-            if (pill && md) pill.textContent = md.textContent.replace(/^[✓⚠✗]\\s*/, '').split(' — ')[0] || 'Ollama';
+            if (pill && md) pill.textContent = md.textContent.replace(/^[✓⚠✗]\\s*/, '').split(' -- ')[0] || 'Ollama';
           }, 2000);
         }"""
     )
