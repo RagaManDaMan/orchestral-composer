@@ -1567,6 +1567,26 @@ _TOOLTIP_JS = """
       tip.style.display = 'none';
       lastSymbol = null;
     });
+
+    // Hover audio + tooltip for the JS tile grid (the visual palette overlay)
+    var lastTileSym = null;
+    function initTileHover() {
+      var grid = document.getElementById('pal-tile-grid');
+      if (!grid) { setTimeout(initTileHover, 400); return; }
+      grid.addEventListener('mouseover', function(e) {
+        var tile = e.target.closest('[data-sym]');
+        if (!tile) return;
+        var sym = tile.dataset.sym;
+        if (!sym || sym === lastTileSym) return;
+        lastTileSym = sym;
+        if (!_hoverAudioEnabled) return;
+        var d = getChordData()[sym];
+        var notes = d ? d.notes : (window._chordNotesFromSym ? window._chordNotesFromSym(sym) : null);
+        if (notes && notes.length) playChord(notes);
+      });
+      grid.addEventListener('mouseleave', function() { lastTileSym = null; });
+    }
+    initTileHover();
   }
 
   window.attachChordTooltips = function() {}; // kept so .then() call is harmless
@@ -3795,7 +3815,7 @@ _TOOLTIP_JS = """
     var rootPat = /^([A-G][b#]?)/;
     var m = sym.match(rootPat); if (!m) return [sym];
     var root = m[1]; var qual = sym.slice(root.length);
-    var rootPc = _NOTE_PC2[root]; if (rootPc === undefined) return [sym];
+    var rootPc = _NOTE_PC[root]; if (rootPc === undefined) return [sym];
     var intervals;
     if (qual==='')        intervals=[0,4,7];
     else if (qual==='m') intervals=[0,3,7];
@@ -3816,6 +3836,7 @@ _TOOLTIP_JS = """
     var _CHROM2=['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
     return intervals.map(function(i){ return _CHROM2[(rootPc+i)%12]; });
   }
+  window._chordNotesFromSym = _chordNotesFromSym;
 
   function _readAccompChords() {
     // First check JS palette state (_seqOrder / _selectedChords) — these are authoritative
@@ -3844,9 +3865,12 @@ _TOOLTIP_JS = """
       result.push({symbol:sym, label:text, notes:notes, checked:inp.checked});
     });
     var checked = result.filter(function(c){return c.checked;});
-    return (checked.length>0 ? checked : result).map(function(c){
-      return {symbol:c.symbol, label:c.label, notes:c.notes};
-    });
+    if (checked.length > 0) return checked.map(function(c){ return {symbol:c.symbol, label:c.label, notes:c.notes}; });
+    if (result.length > 0) return result.map(function(c){ return {symbol:c.symbol, label:c.label, notes:c.notes}; });
+    // Final fallback: use all tiles from the current JS-built palette
+    if (window._currentPaletteTiles && window._currentPaletteTiles.length) {
+      return window._currentPaletteTiles;
+    }
   }
 
   // ── Tap Tempo ───────────────────────────────────────────────────────────
@@ -4610,8 +4634,10 @@ _TOOLTIP_JS = """
 
   var _selRoot = window._selRoot = 'C';
   var _selMode = window._selMode = 'Major (Ionian)';
+  var _customIntervals = null; // set when user types custom intervals; overrides MODE_INTERVALS
   var _seqOrder = window._seqOrder = []; // ordered list of selected chord symbols
   var _selectedChords = window._selectedChords = {}; // sym → true
+  var _extraChords = {}; // sym → notes[] for chords added via the input box (off-palette)
 
   function _setGradioDropdown(elemId, value) {
     var wrap = document.getElementById(elemId) || document.querySelector('[id="'+elemId+'"]');
@@ -4662,6 +4688,8 @@ _TOOLTIP_JS = """
       c.title = m;
       c.onclick = function() {
         _selMode = window._selMode = m;
+        _customIntervals = null;
+        var ci = document.getElementById('pal-custom-input'); if (ci) ci.value = '';
         row.querySelectorAll('.pal-mode').forEach(function(x){x.classList.remove('on');});
         c.classList.add('on');
         _selectedChords = window._selectedChords = {}; _seqOrder = window._seqOrder = [];
@@ -4671,21 +4699,45 @@ _TOOLTIP_JS = """
     });
   }
 
-  // Custom intervals box → hidden Gradio textbox
+  // Parse a custom intervals string (same rules as Python's parse_mode_input):
+  //   space/comma separated numbers; if min>=1 treat as 1-based swarasthanas, else 0-based semitones
+  function _parseCustomIntervals(text) {
+    text = (text || '').trim();
+    if (!text) return null;
+    var nums = text.replace(/,/g, ' ').split(/\s+/).map(Number).filter(function(n){ return !isNaN(n) && isFinite(n); });
+    if (!nums.length) return null;
+    if (Math.min.apply(null, nums) >= 1) {
+      // 1-based swarasthanas
+      var s = {}; nums.forEach(function(n){ s[(n-1)%12]=true; });
+      return Object.keys(s).map(Number).sort(function(a,b){return a-b;});
+    }
+    var s = {}; nums.forEach(function(n){ s[((n%12)+12)%12]=true; });
+    return Object.keys(s).map(Number).sort(function(a,b){return a-b;});
+  }
+
+  function _applyCustomIntervals() {
+    var ci = document.getElementById('pal-custom-input');
+    if (!ci) return;
+    var parsed = _parseCustomIntervals(ci.value);
+    _customIntervals = parsed;
+    _selectedChords = window._selectedChords = {};
+    _seqOrder = window._seqOrder = [];
+    _rebuildTiles();
+  }
+
+  // Custom intervals box → parse in JS and rebuild tiles directly
   function _wireCustomIntervals() {
     var ci = document.getElementById('pal-custom-input');
-    var gr = document.getElementById('pal-custom-gradio');
-    if (!ci || !gr) { setTimeout(_wireCustomIntervals, 400); return; }
-    var grInput = gr.querySelector('input,textarea');
-    if (!grInput) { setTimeout(_wireCustomIntervals, 400); return; }
-    ci.oninput = function() {
-      var nativeSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype, 'value').set;
-      nativeSetter.call(grInput, ci.value);
-      grInput.dispatchEvent(new Event('input', {bubbles:true}));
+    if (!ci) { setTimeout(_wireCustomIntervals, 400); return; }
+    ci.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { _applyCustomIntervals(); }
+    });
+    ci.addEventListener('input', function() {
       clearTimeout(ci._t);
-      ci._t = setTimeout(_triggerGenerate, 600);
-    };
+      // Clear immediately if box is emptied so mode row takes over
+      if (!ci.value.trim()) { _customIntervals = null; _rebuildTiles(); return; }
+      ci._t = setTimeout(_applyCustomIntervals, 700);
+    });
   }
 
   // ── Tile grid: JS-native, no Gradio roundtrip ─────────────────────
@@ -4703,12 +4755,12 @@ _TOOLTIP_JS = """
   function _rebuildTiles() {
     var grid = document.getElementById('pal-tile-grid');
     if (!grid) return;
-    var intervals = MODE_INTERVALS[_selMode] || MODE_INTERVALS['Major (Ionian)'];
+    var intervals = _customIntervals || MODE_INTERVALS[_selMode] || MODE_INTERVALS['Major (Ionian)'];
     var chords = _buildScaleChords(_selRoot, intervals);
     grid.innerHTML = '';
-    // Remove chords from seqOrder that are no longer in scale
+    // Remove chords from seqOrder that are no longer in scale, but preserve manually-added extras
     var syms = chords.map(function(c){return c.sym;});
-    _seqOrder = window._seqOrder = _seqOrder.filter(function(s){ return syms.indexOf(s) >= 0; });
+    _seqOrder = window._seqOrder = _seqOrder.filter(function(s){ return syms.indexOf(s) >= 0 || !!_extraChords[s]; });
     chords.forEach(function(c) {
       var isOn = !!_selectedChords[c.sym];
       var tile = document.createElement('div');
@@ -4724,11 +4776,16 @@ _TOOLTIP_JS = """
         _selectedChords[c.sym] = on ? true : undefined;
         tile.classList.toggle('on', on);
         if (on) { if (_seqOrder.indexOf(c.sym)<0) _seqOrder.push(c.sym); }
-        else { _seqOrder = _seqOrder.filter(function(x){return x!==c.sym;}); }
+        else { _seqOrder = window._seqOrder = _seqOrder.filter(function(x){return x!==c.sym;}); }
         _rebuildSeq();
         _syncGradioCheckboxes();
       };
       grid.appendChild(tile);
+    });
+    // Expose all current palette chords so accompaniment can use them as fallback
+    window._currentPaletteTiles = chords.map(function(c) {
+      return {symbol: c.sym, label: c.sym,
+              notes: window._chordNotesFromSym ? window._chordNotesFromSym(c.sym) : [c.sym]};
     });
     _rebuildSeq();
   }
@@ -4755,7 +4812,7 @@ _TOOLTIP_JS = """
     row.innerHTML = '';
     _seqOrder.forEach(function(sym, i) {
       var pill = document.createElement('div');
-      pill.className = 'pal-seq-pill';
+      pill.className = 'pal-seq-pill' + (_extraChords[sym] ? ' custom' : '');
       pill.draggable = true;
       pill.dataset.i = i;
       var x = document.createElement('span');
@@ -4763,7 +4820,9 @@ _TOOLTIP_JS = """
       x.onclick = function(e) {
         e.stopPropagation();
         _seqOrder.splice(i,1);
+        window._seqOrder = _seqOrder;
         _selectedChords[sym] = undefined;
+        delete _extraChords[sym];
         _rebuildTiles();
       };
       pill.innerHTML = '<span>'+sym+'</span>';
@@ -4795,6 +4854,73 @@ _TOOLTIP_JS = """
     return found;
   }
 
+  // ── Add-chord input: parse symbol, validate, inject into sequence ─────────
+  var _VALID_ROOTS = {C:1,'C#':1,Db:1,D:1,'D#':1,Eb:1,E:1,F:1,'F#':1,Gb:1,G:1,'G#':1,Ab:1,A:1,'A#':1,Bb:1,B:1,Cb:1,'B#':1};
+  var _QUAL_ALIASES = {
+    'M7':'maj7','Δ7':'maj7','△7':'maj7','^7':'maj7','MA7':'maj7','ma7':'maj7',
+    'M9':'maj9','Δ9':'maj9','△9':'maj9',
+    'min':'m','mi':'m','-':'m',
+    'min7':'m7','mi7':'m7','-7':'m7',
+    'min9':'m9','mi9':'m9','-9':'m9',
+    '°':'dim','o':'dim','0':'dim',
+    '°7':'dim7','o7':'dim7',
+    'ø':'m7b5','ø7':'m7b5','m7♭5':'m7b5','m7b5':'m7b5',
+    '+':'aug',
+    'dom7':'7','dom':'7','dom9':'9',
+    'sus':'sus4'
+  };
+  var _VALID_QUALS = {'':1,'m':1,'dim':1,'aug':1,'maj7':1,'7':1,'m7':1,'m7b5':1,'dim7':1,
+                      'maj9':1,'m9':1,'9':1,'7#11':1,'sus4':1,'sus2':1};
+
+  function _parseChordSym(raw) {
+    raw = (raw || '').trim();
+    if (!raw) return {error: 'type a chord first'};
+    var rm = raw.match(/^([A-Ga-g])(##|bb|[#b])?/);
+    if (!rm) return {error: 'must start with A – G'};
+    var root = rm[1].toUpperCase() + (rm[2] || '').replace('##','#').replace('bb','b');
+    if (!_VALID_ROOTS[root]) return {error: root + ' not a valid root'};
+    var qual = raw.slice(rm[0].length).replace(/\s/g,'');
+    // Try alias table, then exact
+    if (_QUAL_ALIASES[qual] !== undefined) qual = _QUAL_ALIASES[qual];
+    if (!_VALID_QUALS[qual]) return {error: '"' + qual + '" not a known quality'};
+    var sym = root + qual;
+    // Use global _chordNotesFromSym exposed from IIFE 1
+    var notes = window._chordNotesFromSym ? window._chordNotesFromSym(sym) : null;
+    if (!notes || !notes.length || (notes.length===1 && notes[0]===sym)) {
+      return {error: 'could not compute notes for ' + sym};
+    }
+    return {sym: sym, notes: notes};
+  }
+
+  function _wireAddChord() {
+    var inp = document.getElementById('pal-add-input');
+    var btn = document.getElementById('pal-add-btn');
+    var err = document.getElementById('pal-add-err');
+    if (!inp || !btn) { setTimeout(_wireAddChord, 400); return; }
+
+    function doAdd() {
+      var parsed = _parseChordSym(inp.value);
+      if (parsed.error) {
+        err.textContent = parsed.error;
+        setTimeout(function(){ err.textContent=''; }, 2500);
+        return;
+      }
+      err.textContent = '';
+      var sym = parsed.sym;
+      _extraChords[sym] = parsed.notes;
+      if (_seqOrder.indexOf(sym) < 0) {
+        _seqOrder.push(sym);
+        window._seqOrder = _seqOrder;
+      }
+      _selectedChords[sym] = true;
+      inp.value = '';
+      _rebuildSeq();
+    }
+
+    btn.onclick = doAdd;
+    inp.addEventListener('keydown', function(e){ if (e.key==='Enter') doAdd(); });
+  }
+
   // Initial tile build — triggered once DOM is ready
   function _watchPicker() {
     var grid = document.getElementById('pal-tile-grid');
@@ -4807,6 +4933,7 @@ _TOOLTIP_JS = """
     _buildNoteRow();
     _buildModeRow();
     _wireCustomIntervals();
+    _wireAddChord();
     _watchPicker();
     // Auto-generate on load
     setTimeout(_triggerGenerate, 800);
@@ -5544,8 +5671,16 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   font-size: 13px; font-weight: 500; color: var(--text, #ddd); cursor: grab; user-select: none; }
 .pal-seq-x { font-size: 15px; color: var(--text-dim, #888); cursor: pointer; line-height: 1; }
 .pal-seq-x:hover { color: #e2534a; }
+.pal-seq-pill.custom { border-style: dashed; border-color: #5a8abf; color: #9ecbf7; }
 .pal-seq-label { font-size: 11px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase;
   color: var(--text-dim, #888); margin-bottom: 6px; margin-top: 4px; }
+#pal-add-chord-row { display:flex; align-items:center; gap:6px; margin-top:8px; }
+#pal-add-input { flex:1; padding:5px 10px; border-radius:6px; border:.5px solid #555;
+  background:#1a1a2e; color:inherit; font-family:inherit; font-size:13px; }
+#pal-add-btn { padding:5px 13px; border-radius:6px; background:#1a3d6e; color:#9ecbf7;
+  border:1px solid #5a8abf; cursor:pointer; font-size:13px; white-space:nowrap; }
+#pal-add-btn:hover { background:#1e5099; }
+#pal-add-err { font-size:11px; color:#e2534a; white-space:nowrap; }
 
 /* ═══════════════════════════════════════════════
    LIVE ACCOMPANIMENT — hardware console
@@ -6049,7 +6184,12 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                 choices=[], value=[], interactive=True,
                 elem_id="chord_picker",
             )
-            gr.HTML('<div class="pal-seq-label">Sequence</div><div id="pal-seq-row"></div>')
+            gr.HTML('<div class="pal-seq-label">Sequence</div><div id="pal-seq-row"></div>'
+                    '<div id="pal-add-chord-row">'
+                    '<input id="pal-add-input" type="text" placeholder="Add chord: Ebmaj7, F#dim7, Bb7…"/>'
+                    '<button id="pal-add-btn">＋ Add</button>'
+                    '<span id="pal-add-err"></span>'
+                    '</div>')
             chord_data_store = gr.HTML(value="", elem_id="chord-data-wrapper")
             with gr.Row():
                 use_selected_btn    = gr.Button("→ Copy to chord input",    size="sm", scale=2)

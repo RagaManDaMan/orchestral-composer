@@ -428,6 +428,40 @@ All generated files land in `outputs/`:
 
 ---
 
+## Known issues
+
+### Sufi / Qawwali and Koothu / Folk presets crash on MIDI export
+
+**Who is affected:** anyone who selects either of these two presets and tries
+to generate a MIDI arrangement.
+
+**What they see:** the export silently fails — no file is downloaded, no clear
+error message.
+
+**Root cause:** both preset names contain a forward slash (`/`). When the code
+constructs the output filename directly from the preset name, the operating
+system interprets the slash as a directory separator and tries to open a path
+like `outputs/Sufi /Qawwali.mid` — a directory that doesn't exist. The write
+fails with a `FileNotFoundError`.
+
+**Why this matters:** a user who specifically chose *Sufi / Qawwali* or
+*Koothu / Folk* did so because those traditions speak to them. They followed
+every step correctly. They hit Generate. Nothing happened. The code failed them
+silently, and the failure is invisible — there is no error banner, no retry
+path, no explanation. From their perspective the tool simply doesn't work for
+the music they care about most.
+
+**Fix (not yet applied):** sanitize the preset name before building the output
+path — replace `/` (and any other filesystem-unsafe characters) with a dash or
+underscore. One line in `midi_builder.py` where `output_path` is constructed.
+
+These two failures are tracked in the test suite
+(`TestMidiRoundTrip::test_midi_round_trip[Sufi / Qawwali-instruments21]` and
+`[Koothu / Folk-instruments24]`). Every other preset passes. Fix the slash,
+and they pass too.
+
+---
+
 ## Carnatic note on the korvai
 
 The korvai engine implements the classical **mukthāyi korvai** form: three
