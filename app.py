@@ -1367,7 +1367,7 @@ _TOOLTIP_JS = """
     var nd = _noiseBuffer.getChannelData(0);
     for (var i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
     // Sync slider positions to match initial gain values
-    var _initVols = {master:0.75, bass:1.0, chord:1.0, drum:1.0};
+    var _initVols = {master:0.45, bass:0.6, chord:0.6, drum:0.6};
     ['master','bass','chord','drum'].forEach(function(t) {
       var el = document.getElementById('mix-'+t);
       if (el) { el.value = _initVols[t]; var node = {master:_masterGain,bass:_bassGain,chord:_chordGain,drum:_drumGain}[t]; if(node) node.gain.value = _initVols[t]; }
@@ -6241,8 +6241,8 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
       <!-- Controls row -->
       <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:13px">
         <div style="flex:2;min-width:130px">
-          <div class="ac-lbl">BPM &nbsp;<span id="ctrl-bpm-val" style="color:#5ba3f5;font-size:13px">120</span></div>
-          <input id="ctrl-bpm" type="range" min="40" max="240" value="120" step="1"
+          <div class="ac-lbl">BPM &nbsp;<span id="ctrl-bpm-val" style="color:#5ba3f5;font-size:13px">85</span></div>
+          <input id="ctrl-bpm" type="range" min="40" max="240" value="85" step="1"
             style="width:100%;accent-color:#5ba3f5;cursor:pointer"
             oninput="document.getElementById('ctrl-bpm-val').textContent=this.value">
         </div>
@@ -6299,9 +6299,9 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
       <!-- Feel + Passing chord + MIDI Out row -->
       <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:13px">
         <div style="flex:2;min-width:130px">
-          <div class="ac-lbl">Feel &nbsp;<span id="ctrl-feel-val" style="color:#5ba3f5;font-size:13px">0%</span>
+          <div class="ac-lbl">Feel &nbsp;<span id="ctrl-feel-val" style="color:#5ba3f5;font-size:13px">10%</span>
             <span style="color:#778899;font-size:10px;margin-left:6px">0=robotic · 100=loose</span></div>
-          <input id="ctrl-feel" type="range" min="0" max="1" value="0" step="0.01"
+          <input id="ctrl-feel" type="range" min="0" max="1" value="0.10" step="0.01"
             style="width:100%;accent-color:#a78bfa;cursor:pointer"
             oninput="window.setHumanize&&window.setHumanize(this.value);document.getElementById('ctrl-feel-val').textContent=Math.round(this.value*100)+'%'">
         </div>
@@ -6354,15 +6354,15 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <div class="mixer-strip">
             <div class="ac-lbl">Master</div>
-            <input id="mix-master" type="range" min="0" max="1.5" step="0.01" value="0.75" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-master" type="range" min="0" max="1.5" step="0.01" value="0.45" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('master',this.value);document.getElementById('mix-master-val').textContent=Math.round(this.value/1.5*100)+'%'">
-            <div id="mix-master-val" class="ac-val">50%</div>
+            <div id="mix-master-val" class="ac-val">30%</div>
           </div>
           <div class="mixer-strip">
             <div class="ac-lbl">Bass</div>
-            <input id="mix-bass" type="range" min="0" max="2" step="0.01" value="1.0" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-bass" type="range" min="0" max="2" step="0.01" value="0.6" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('bass',this.value);document.getElementById('mix-bass-val').textContent=Math.round(this.value/2*100)+'%'">
-            <div id="mix-bass-val" class="ac-val">50%</div>
+            <div id="mix-bass-val" class="ac-val">30%</div>
             <div class="dens-row" id="dens-bass">
               <button class="dens-btn" data-v="0" onclick="window._setDens('bass',0,this)">Off</button>
               <button class="dens-btn" data-v="1" onclick="window._setDens('bass',1,this)">Sparse</button>
@@ -6372,9 +6372,9 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
           </div>
           <div class="mixer-strip">
             <div class="ac-lbl" id="mix-chord-label">Chords</div>
-            <input id="mix-chord" type="range" min="0" max="2" step="0.01" value="1.0" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-chord" type="range" min="0" max="2" step="0.01" value="0.6" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('chord',this.value);document.getElementById('mix-chord-val').textContent=Math.round(this.value/2*100)+'%'">
-            <div id="mix-chord-val" class="ac-val">50%</div>
+            <div id="mix-chord-val" class="ac-val">30%</div>
             <div class="dens-row" id="dens-chord">
               <button class="dens-btn" data-v="0" onclick="window._setDens('chord',0,this)">Off</button>
               <button class="dens-btn" data-v="1" onclick="window._setDens('chord',1,this)">Sparse</button>
@@ -6438,9 +6438,9 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
           </div>
           <div class="mixer-strip">
             <div class="ac-lbl">Drums</div>
-            <input id="mix-drum" type="range" min="0" max="2" step="0.01" value="1.0" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-drum" type="range" min="0" max="2" step="0.01" value="0.6" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('drum',this.value);document.getElementById('mix-drum-val').textContent=Math.round(this.value/2*100)+'%'">
-            <div id="mix-drum-val" class="ac-val">50%</div>
+            <div id="mix-drum-val" class="ac-val">30%</div>
             <div class="dens-row" id="dens-drum">
               <button class="dens-btn" data-v="0" onclick="window._setDens('drum',0,this)">Off</button>
               <button class="dens-btn active" data-v="1" onclick="window._setDens('drum',1,this)">Sparse</button>
