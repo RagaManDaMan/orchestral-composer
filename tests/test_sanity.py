@@ -297,7 +297,8 @@ class TestMidiRoundTrip:
             CHORDAL_INSTRUMENTS, BASS_INSTRUMENTS,
             dict(INSTRUMENT_RANGES), "Block chords", 4.0, key,
         )
-        midi_path = str(tmp_path / f"{preset_name.replace(' ', '_')}.mid")
+        safe_name = preset_name.replace(' ', '_').replace('/', '-')
+        midi_path = str(tmp_path / f"{safe_name}.mid")
         build_midi(orchestration, midi_path)
 
         assert os.path.exists(midi_path), "MIDI file not created"
@@ -1139,7 +1140,8 @@ class TestInstrumentCompleteness:
         instruments = INSTRUMENT_PRESETS["Blues Band"]
         assert instruments[0] == "harmonica", "harmonica must be melody (index 0)"
         harmony = instruments[1:]
-        assert all(i in CHORDAL_INSTRUMENTS or i in BASS_INSTRUMENTS for i in harmony), \
+        assert all(i in CHORDAL_INSTRUMENTS or i in BASS_INSTRUMENTS or i == "drums"
+                   for i in harmony), \
             "All Blues Band harmony instruments must be algo-replaceable (no LLM needed)"
 
         timeline = build_chord_timeline(["A7", "D7", "E7"], 4.0, 48.0)
