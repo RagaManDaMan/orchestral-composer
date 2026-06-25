@@ -2239,7 +2239,7 @@ _TOOLTIP_JS = """
     var nd = _noiseBuffer.getChannelData(0);
     for (var i = 0; i < nd.length; i++) nd[i] = Math.random() * 2 - 1;
     // Sync slider positions to match initial gain values
-    var _initVols = {master:0.75, bass:1.0, chord:1.0, drum:1.0};
+    var _initVols = {master:0.45, bass:0.6, chord:0.6, drum:0.6};
     ['master','bass','chord','drum'].forEach(function(t) {
       var el = document.getElementById('mix-'+t);
       if (el) { el.value = _initVols[t]; var node = {master:_masterGain,bass:_bassGain,chord:_chordGain,drum:_drumGain}[t]; if(node) node.gain.value = _initVols[t]; }
@@ -2439,6 +2439,26 @@ _TOOLTIP_JS = """
       tip.style.display = 'none';
       lastSymbol = null;
     });
+
+    // Hover audio + tooltip for the JS tile grid (the visual palette overlay)
+    var lastTileSym = null;
+    function initTileHover() {
+      var grid = document.getElementById('pal-tile-grid');
+      if (!grid) { setTimeout(initTileHover, 400); return; }
+      grid.addEventListener('mouseover', function(e) {
+        var tile = e.target.closest('[data-sym]');
+        if (!tile) return;
+        var sym = tile.dataset.sym;
+        if (!sym || sym === lastTileSym) return;
+        lastTileSym = sym;
+        if (!_hoverAudioEnabled) return;
+        var d = getChordData()[sym];
+        var notes = d ? d.notes : (window._chordNotesFromSym ? window._chordNotesFromSym(sym) : null);
+        if (notes && notes.length) playChord(notes);
+      });
+      grid.addEventListener('mouseleave', function() { lastTileSym = null; });
+    }
+    initTileHover();
   }
 
   window.attachChordTooltips = function() {}; // kept so .then() call is harmless
@@ -2458,6 +2478,19 @@ _TOOLTIP_JS = """
   var _accompTimer     = null;
   var _accompBeatsLeft = 0;   // float beat counter (supports fractional bars/chord)
   var _accompState     = { chords:[], idx:0, nextBarTime:0, bpb:4, beatDur:0.5, barsPerChord:2, style:'Ballad' };
+  var _bassRangeLo = 36, _bassRangeHi = 55;   // C2–G3
+  var _chordRangeLo = 48, _chordRangeHi = 79; // C3–G5
+
+  // ── Melodic response state ────────────────────────────────────────────────
+  var _phraseArmed    = false;
+  var _phraseCapturing = false;
+  var _capturedPhrase  = [];     // [{midi, t, dur}] normalized to t=0 at phrase start
+  var _phraseGapTimer  = null;
+  var _micLastMidi     = -1;
+  var _micLastT        = 0;
+  var _micPitchHist    = [];   // 3-frame median for pitch smoothing
+  var _melodyGain      = null;
+  var PHRASE_GAP_SEC   = 1.2;
   // density: 1=sparse 2=moderate 3=dense 0=off
   var _density = { bass:2, chord:2, drum:1 };
   // humanize (0=robotic, 1=loose feel)
@@ -3934,12 +3967,18 @@ _TOOLTIP_JS = """
   ]},
 
   'Rock Basic': { label:'Rock Basic', cat:'Rock', events: [
+    // d:1 sparse — kick+snare + quarter hi-hats
     {beat:0,   type:'kick',  vel:0.88,d:1},{beat:2,   type:'kick',  vel:0.82,d:1},
     {beat:1,   type:'snare', vel:0.82,d:1},{beat:3,   type:'snare', vel:0.82,d:1},
-    {beat:0,   type:'hihat', vel:0.55,d:1},{beat:0.5, type:'hihat', vel:0.42,d:1},
-    {beat:1,   type:'hihat', vel:0.52,d:1},{beat:1.5, type:'hihat', vel:0.40,d:1},
-    {beat:2,   type:'hihat', vel:0.52,d:1},{beat:2.5, type:'hihat', vel:0.40,d:1},
-    {beat:3,   type:'hihat', vel:0.50,d:1},{beat:3.5, type:'hihat', vel:0.38,d:1},
+    {beat:0,   type:'hihat', vel:0.55,d:1},{beat:1,   type:'hihat', vel:0.50,d:1},
+    {beat:2,   type:'hihat', vel:0.52,d:1},{beat:3,   type:'hihat', vel:0.48,d:1},
+    // d:2 moderate — 8th hi-hats
+    {beat:0.5, type:'hihat', vel:0.42,d:2},{beat:1.5, type:'hihat', vel:0.40,d:2},
+    {beat:2.5, type:'hihat', vel:0.40,d:2},{beat:3.5, type:'hihat', vel:0.38,d:2},
+    // d:3 dense — add syncopated kick + ghost snares to fill
+    {beat:2.5, type:'kick',  vel:0.55,d:3},{beat:0.5, type:'ghost', vel:0.22,d:3},
+    {beat:1.5, type:'ghost', vel:0.20,d:3},{beat:2.5, type:'ghost', vel:0.22,d:3},
+    {beat:3.5, type:'ghost', vel:0.20,d:3},
   ]},
 
   'Rock Groove': { label:'Rock Groove', cat:'Rock', events: [
@@ -4058,17 +4097,21 @@ _TOOLTIP_JS = """
   ]},
 
   'Double Time': { label:'Double Time', cat:'Groove', events: [
-    {beat:0,   type:'kick',  vel:0.88,d:1},{beat:2,   type:'kick',  vel:0.82,d:1},
-    {beat:1,   type:'snare', vel:0.85,d:1},{beat:3,   type:'snare', vel:0.85,d:1},
-    // All 16ths on hi-hat -- this IS the double-time feel
-    {beat:0,    type:'hihat',vel:0.55,d:1},{beat:0.25, type:'hihat',vel:0.36,d:1},
-    {beat:0.5,  type:'hihat',vel:0.48,d:1},{beat:0.75, type:'hihat',vel:0.33,d:1},
-    {beat:1,    type:'hihat',vel:0.52,d:1},{beat:1.25, type:'hihat',vel:0.36,d:1},
-    {beat:1.5,  type:'hihat',vel:0.48,d:1},{beat:1.75, type:'hihat',vel:0.30,d:1},
-    {beat:2,    type:'hihat',vel:0.52,d:1},{beat:2.25, type:'hihat',vel:0.36,d:1},
-    {beat:2.5,  type:'hihat',vel:0.48,d:1},{beat:2.75, type:'hihat',vel:0.30,d:1},
-    {beat:3,    type:'hihat',vel:0.52,d:1},{beat:3.25, type:'hihat',vel:0.36,d:1},
-    {beat:3.5,  type:'hihat',vel:0.48,d:1},{beat:3.75, type:'hihat',vel:0.28,d:1},
+    // d:1 sparse — skeleton + quarter hi-hats (clear breathing room)
+    {beat:0,    type:'kick',  vel:0.88,d:1},{beat:2,    type:'kick',  vel:0.82,d:1},
+    {beat:1,    type:'snare', vel:0.85,d:1},{beat:3,    type:'snare', vel:0.85,d:1},
+    {beat:0,    type:'hihat', vel:0.55,d:1},{beat:1,    type:'hihat', vel:0.50,d:1},
+    {beat:2,    type:'hihat', vel:0.52,d:1},{beat:3,    type:'hihat', vel:0.48,d:1},
+    // d:2 moderate — 8th hi-hats fill gaps + syncopated kicks + ghost snares
+    {beat:0.5,  type:'hihat', vel:0.42,d:2},{beat:1.5,  type:'hihat', vel:0.38,d:2},
+    {beat:2.5,  type:'hihat', vel:0.42,d:2},{beat:3.5,  type:'hihat', vel:0.36,d:2},
+    {beat:1.75, type:'kick',  vel:0.58,d:2},{beat:3.5,  type:'kick',  vel:0.52,d:2},
+    {beat:0.5,  type:'ghost', vel:0.22,d:2},{beat:2.5,  type:'ghost', vel:0.20,d:2},
+    // d:3 dense — fill remaining 16th positions; every slot covered, no pauses
+    {beat:0.25, type:'hihat', vel:0.33,d:3},{beat:0.75, type:'hihat', vel:0.28,d:3},
+    {beat:1.25, type:'hihat', vel:0.33,d:3},{beat:1.75, type:'hihat', vel:0.27,d:3},
+    {beat:2.25, type:'hihat', vel:0.33,d:3},{beat:2.75, type:'hihat', vel:0.27,d:3},
+    {beat:3.25, type:'hihat', vel:0.33,d:3},{beat:3.75, type:'hihat', vel:0.25,d:3},
   ]},
 
   'Reggae': { label:'Reggae', cat:'Groove', events: [
@@ -4347,7 +4390,173 @@ _TOOLTIP_JS = """
 
   }
 
-  // -- Markov chord transitions ------------------------------------------------
+  // ── Phrase capture ─────────────────────────────────────────────────────────
+
+  function _melStatus(msg) { var el=document.getElementById('mel-status'); if(el) el.textContent=msg; }
+
+  function _updateArmBtn(active) {
+    var btn = document.getElementById('mel-arm-btn');
+    if (!btn) return;
+    btn.style.background = active ? '#2a7040' : '#1a3050';
+    btn.textContent = active ? '📡 Listening…' : '📡 Arm';
+  }
+
+  function _captureNoteOn(midi) {
+    if (_phraseArmed) {
+      _capturedPhrase = []; _phraseArmed = false; _phraseCapturing = true;
+      _updateArmBtn(false);
+    }
+    clearTimeout(_phraseGapTimer);
+    var now = _audioCtx ? _audioCtx.currentTime : 0;
+    _capturedPhrase.push({midi:midi, t:now, dur:0});
+  }
+
+  function _captureNoteOff(midi) {
+    if (!_phraseCapturing) return;
+    var now = _audioCtx ? _audioCtx.currentTime : 0;
+    for (var i = _capturedPhrase.length-1; i >= 0; i--) {
+      if (_capturedPhrase[i].midi === midi && _capturedPhrase[i].dur === 0) {
+        _capturedPhrase[i].dur = Math.max(0.05, now - _capturedPhrase[i].t);
+        break;
+      }
+    }
+    if (_capturedPhrase.every(function(n){return n.dur > 0;}))
+      _phraseGapTimer = setTimeout(_phraseComplete, PHRASE_GAP_SEC * 1000);
+  }
+
+  function _phraseComplete() {
+    if (!_capturedPhrase.length) { _phraseCapturing = false; return; }
+    var now = _audioCtx ? _audioCtx.currentTime : 0;
+    _capturedPhrase.forEach(function(n){ if(n.dur===0) n.dur = Math.max(0.05, now-n.t); });
+    var t0 = _capturedPhrase[0].t;
+    _capturedPhrase.forEach(function(n){ n.t -= t0; });
+    _capturedPhrase = _capturedPhrase.filter(function(n){ return n.dur >= 0.06; });
+    _phraseCapturing = false; _micLastMidi = -1;
+    _updateArmBtn(false);
+    _melStatus('Captured ' + _capturedPhrase.length + ' note(s) — click ▶ Generate');
+    var autoEl = document.getElementById('mel-auto-respond');
+    if (autoEl && autoEl.checked) setTimeout(function(){ window.generateMelodicResponse&&window.generateMelodicResponse(); }, 200);
+  }
+
+  // ── Melodic response generators ────────────────────────────────────────────
+
+  // Snap captured phrase to 8th-note grid; collapse duplicate onsets
+  function _quantizePhrase(phrase, beatDur) {
+    if (!phrase.length) return phrase;
+    var grid = beatDur / 2; // 8th note
+    var sorted = phrase.slice().sort(function(a,b){return a.t-b.t;});
+    var result = [];
+    sorted.forEach(function(n) {
+      var tQ   = Math.round(n.t / grid) * grid;
+      var durQ = Math.max(grid * 0.5, Math.round(n.dur / grid) * grid);
+      if (result.length && Math.abs(tQ - result[result.length-1].t) < grid * 0.1) return; // deduplicate
+      result.push({midi:n.midi, t:tQ, dur:durQ});
+    });
+    return result;
+  }
+
+  function _freePhrase(scale, anchor, targetBeats, beatDur) {
+    var sorted = scale.slice().sort(function(a,b){return a-b;});
+    var result = [], current = _snapToScale(anchor, sorted);
+    var totalSec = targetBeats * beatDur, beat = 0, half = totalSec / 2;
+    var ascending = true;
+    var lo = _chordRangeLo + 7, hi = _chordRangeHi;
+    while (beat < totalSec - 0.01) {
+      var r = Math.random();
+      var noteDur = r<0.40 ? beatDur : r<0.70 ? beatDur/2 : r<0.85 ? beatDur*1.5 : beatDur*2;
+      noteDur = Math.min(noteDur, totalSec - beat);
+      if (beat >= half) ascending = false;
+      // Walk with direction bias; near end converge to anchor
+      var steps;
+      if (totalSec - beat < beatDur * 2) {
+        var dist = _scaleDegDist(current, anchor, sorted);
+        steps = dist > 0 ? 1 : dist < 0 ? -1 : 0;
+      } else {
+        var mr = Math.random();
+        if (mr < 0.55) steps = ascending ? 1 : -1;
+        else if (mr < 0.75) steps = 0;
+        else if (mr < 0.88) steps = ascending ? 2 : -2;
+        else steps = ascending ? -1 : 1;
+      }
+      current = _scaleStep(current, sorted, steps);
+      while (current < lo) current += 12;
+      while (current > hi) current -= 12;
+      result.push({midi:current, beat:beat, dur:noteDur * 0.88});
+      beat += noteDur;
+    }
+    if (result.length) result[result.length-1].midi = _snapToScale(anchor, sorted);
+    return result;
+  }
+
+  function _imitatePhrase(input, scale, anchor, targetBeats, beatDur) {
+    var sorted = scale.slice().sort(function(a,b){return a-b;});
+    var shift = 2 + Math.floor(Math.random() * 3);
+    var current = _scaleStep(_snapToScale(anchor, sorted), sorted, shift);
+    var lo = _chordRangeLo + 7, hi = _chordRangeHi;
+    while (current < lo) current += 12; while (current > hi) current -= 12;
+    var inputSpan = (input[input.length-1].t + input[input.length-1].dur) || 1;
+    var stretch = (targetBeats * beatDur) / inputSpan;
+    var result = [];
+    // Use input onset times directly to preserve rhythm
+    for (var i = 0; i < input.length; i++) {
+      var beat = input[i].t * stretch;
+      var dur  = input[i].dur * stretch;
+      result.push({midi:current, beat:beat, dur:dur * 0.88});
+      if (i + 1 < input.length) {
+        var steps = _scaleDegDist(input[i].midi, input[i+1].midi, sorted);
+        steps = Math.max(-4, Math.min(4, steps));
+        current = _scaleStep(current, sorted, steps);
+        while (current < lo) current += 12; while (current > hi) current -= 12;
+      }
+    }
+    return result;
+  }
+
+  function _answerPhrase(input, scale, anchor, targetBeats, beatDur) {
+    var sorted = scale.slice().sort(function(a,b){return a-b;});
+    var current = _snapToScale(input[input.length-1].midi, sorted);
+    var lo = _chordRangeLo + 7, hi = _chordRangeHi;
+    while (current < lo) current += 12; while (current > hi) current -= 12;
+    var inputSpan = (input[input.length-1].t + input[input.length-1].dur) || 1;
+    var stretch = (targetBeats * beatDur) / inputSpan;
+    var result = [];
+    for (var i = 0; i < input.length; i++) {
+      var beat = input[i].t * stretch;  // onset time preserved
+      var dur  = input[i].dur * stretch;
+      result.push({midi:current, beat:beat, dur:dur * 0.88});
+      var stepsToTonic = _scaleDegDist(current, anchor, sorted);
+      var move;
+      if (i >= input.length - 2) {
+        move = stepsToTonic > 0 ? Math.min(stepsToTonic,1) : stepsToTonic < 0 ? Math.max(stepsToTonic,-1) : 0;
+      } else {
+        var dir = stepsToTonic > 0 ? 1 : -1;
+        move = Math.random() < 0.65 ? dir : (Math.random() < 0.5 ? dir*2 : 0);
+      }
+      current = _scaleStep(current, sorted, move);
+      while (current < lo) current += 12; while (current > hi) current -= 12;
+    }
+    if (result.length) result[result.length-1].midi = _snapToScale(anchor, sorted);
+    return result;
+  }
+
+  function _generateMelody(input, scalePCs, targetBeats, style) {
+    if (!scalePCs.length) scalePCs = [0,2,4,5,7,9,11];
+    var scale = scalePCs.slice().sort(function(a,b){return a-b;});
+    var lp = _readLiveParams(), beatDur = lp.beatDur;
+    var mid = _chordRangeLo + Math.floor((_chordRangeHi - _chordRangeLo) * 0.55);
+    var anchor = _snapToScale(mid, scale);
+    while (anchor < _chordRangeLo + 7) anchor += 12;
+    while (anchor > _chordRangeHi)     anchor -= 12;
+    // Always quantize captured input to beat grid before using it
+    var q = input.length ? _quantizePhrase(input, beatDur) : [];
+    if (q.length >= 2) {
+      if (style === 'imitate') return _imitatePhrase(q, scale, anchor, targetBeats, beatDur);
+      if (style === 'answer')  return _answerPhrase(q, scale, anchor, targetBeats, beatDur);
+    }
+    return _freePhrase(scale, anchor, targetBeats, beatDur);
+  }
+
+  // ── Markov chord transitions ────────────────────────────────────────────────
 
   function _chordFn(label) {
     var r = (label.split('·')[0]||'').trim().replace(/[♭♯°✶]/g,'').toUpperCase();
@@ -4503,6 +4712,7 @@ _TOOLTIP_JS = """
     var _CHROM2=['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
     return intervals.map(function(i){ return _CHROM2[(rootPc+i)%12]; });
   }
+  window._chordNotesFromSym = _chordNotesFromSym;
 
   function _readAccompChords() {
     // First check JS palette state (_seqOrder / _selectedChords) -- these are authoritative
@@ -4531,9 +4741,12 @@ _TOOLTIP_JS = """
       result.push({symbol:sym, label:text, notes:notes, checked:inp.checked});
     });
     var checked = result.filter(function(c){return c.checked;});
-    return (checked.length>0 ? checked : result).map(function(c){
-      return {symbol:c.symbol, label:c.label, notes:c.notes};
-    });
+    if (checked.length > 0) return checked.map(function(c){ return {symbol:c.symbol, label:c.label, notes:c.notes}; });
+    if (result.length > 0) return result.map(function(c){ return {symbol:c.symbol, label:c.label, notes:c.notes}; });
+    // Final fallback: use all tiles from the current JS-built palette
+    if (window._currentPaletteTiles && window._currentPaletteTiles.length) {
+      return window._currentPaletteTiles;
+    }
   }
 
   // -- Tap Tempo -----------------------------------------------------------
@@ -4637,7 +4850,9 @@ _TOOLTIP_JS = """
     _accompRunning = false; window._accompRunning = false;
     if (_accompTimer) { clearTimeout(_accompTimer); _accompTimer = null; }
     _stopMidiClock();
-    var d = document.getElementById('accomp-now-playing'); if (d) d.textContent = '--';
+    var d = document.getElementById('accomp-now-playing'); if (d) d.textContent = '—';
+    // Silence any pre-scheduled melody notes immediately
+    if (_melodyGain && _audioCtx) _melodyGain.gain.setTargetAtTime(0, _audioCtx.currentTime, 0.04);
   };
 
   // -- MIDI output -- stream to DAW (Logic Pro via IAC driver) ------------------
@@ -4797,8 +5012,31 @@ _TOOLTIP_JS = """
     _pitchAnalyser.getFloatTimeDomainData(buf);
     var freq = _autocorrelate(buf, _audioCtx.sampleRate);
     if (freq > 60 && freq < 2000) {
-      var pc = Math.round(12*Math.log2(freq/440)+69) & 0xFF; pc = ((pc%12)+12)%12;
+      var midiRaw = Math.round(12 * Math.log2(freq / 440) + 69);
+      // 3-frame median smoothing — reduces pitch wobble / vibrato false-triggers
+      _micPitchHist.push(midiRaw); if (_micPitchHist.length > 3) _micPitchHist.shift();
+      var h = _micPitchHist.slice().sort(function(a,b){return a-b;});
+      var midiF = h[Math.floor(h.length/2)];
+      var pc = ((midiF % 12) + 12) % 12;
       _applyListenResponse([pc]);
+      // Phrase capture: new note when smoothed pitch shifts by ≥ 1 semitone
+      if (_phraseArmed || _phraseCapturing) {
+        if (midiF !== _micLastMidi) {
+          if (_micLastMidi >= 0 && _phraseCapturing) {
+            var d = now - _micLastT;
+            if (d >= 0.1) _capturedPhrase.push({midi:_micLastMidi, t:_micLastT, dur:d});
+          }
+          _micLastMidi = midiF; _micLastT = now;
+          if (_phraseArmed) { _phraseCapturing = true; _phraseArmed = false; _updateArmBtn(false); }
+          clearTimeout(_phraseGapTimer);
+        }
+      }
+    } else if (_phraseCapturing && _micLastMidi >= 0) {
+      // Silence detected — close the last note and start gap timer
+      var d = now - _micLastT;
+      if (d >= 0.1) _capturedPhrase.push({midi:_micLastMidi, t:_micLastT, dur:d});
+      _micLastMidi = -1;
+      _phraseGapTimer = setTimeout(_phraseComplete, PHRASE_GAP_SEC * 1000);
     }
     _pitchTimer = setTimeout(_pollPitch, 80);
   }
@@ -4835,6 +5073,86 @@ _TOOLTIP_JS = """
     if (mode === 'midi')  _initMIDI();
     if (mode === 'audio') _initAudioListen();
   };
+
+  window.armPhrase = function() {
+    _capturedPhrase = []; _phraseArmed = true; _phraseCapturing = false;
+    clearTimeout(_phraseGapTimer); _micLastMidi = -1;
+    _updateArmBtn(true);
+    _melStatus('Armed — play a phrase');
+  };
+
+  window.clearPhrase = function() {
+    _capturedPhrase = []; _phraseArmed = false; _phraseCapturing = false;
+    clearTimeout(_phraseGapTimer); _micLastMidi = -1;
+    _updateArmBtn(false); _melStatus('—');
+  };
+
+  function _restoreMelodyGain() {
+    if (!_melodyGain || !_audioCtx) return;
+    var el = document.getElementById('mix-melody');
+    var v = el ? parseFloat(el.value) : 0.6;
+    _melodyGain.gain.cancelScheduledValues(_audioCtx.currentTime);
+    _melodyGain.gain.setTargetAtTime(v, _audioCtx.currentTime, 0.01);
+  }
+
+  window.playCaptured = function() {
+    if (!_capturedPhrase.length) { _melStatus('Nothing captured — Arm first'); return; }
+    if (!_audioCtx) { var AC=window.AudioContext||window.webkitAudioContext; if(AC) _audioCtx=new AC(); }
+    if (_audioCtx.state==='suspended') _audioCtx.resume();
+    _ensureGainNodes(); _restoreMelodyGain();
+    var lp = _readLiveParams();
+    var q = _quantizePhrase(_capturedPhrase, lp.beatDur);
+    var now = _audioCtx.currentTime + 0.12;
+    q.forEach(function(n) { _playMelodyNote(n.midi, now + n.t, n.dur, 0.72); });
+    _melStatus('▶ Captured: ' + q.length + ' notes (quantized)');
+  };
+
+  window.generateMelodicResponse = function() {
+    var scalePCs = _getScalePCs();
+    if (!scalePCs.length) { _melStatus('Generate the palette first'); return; }
+    var style    = (document.getElementById('mel-style')||{}).value || 'answer';
+    var bars     = parseInt((document.getElementById('mel-bars')||{}).value || 2);
+    var lp       = _readLiveParams();
+    var notes    = _generateMelody(_capturedPhrase, scalePCs, bars * lp.bpb, style);
+    if (!notes.length) { _melStatus('Nothing generated'); return; }
+    if (!_audioCtx) { var AC=window.AudioContext||window.webkitAudioContext; if(AC) _audioCtx=new AC(); }
+    if (_audioCtx.state==='suspended') _audioCtx.resume();
+    _ensureGainNodes(); _restoreMelodyGain();
+    var now = _audioCtx.currentTime + 0.12;
+    notes.forEach(function(n) { _playMelodyNote(n.midi, now + n.beat, n.dur, 0.72); });
+    _melStatus('▶ ' + notes.length + ' notes · ' + bars + ' bar' + (bars>1?'s':''));
+  };
+
+  window.setRangeNote = function(track, which, midi) {
+    midi = parseInt(midi);
+    if (track === 'bass')  { if (which === 'lo') _bassRangeLo  = midi; else _bassRangeHi  = midi; }
+    else                   { if (which === 'lo') _chordRangeLo = midi; else _chordRangeHi = midi; }
+  };
+
+  function _buildNoteOptions(id, selected) {
+    var names = ['C','C#','D','Eb','E','F','F#','G','Ab','A','Bb','B'];
+    var sel = document.getElementById(id); if (!sel) return;
+    sel.innerHTML = '';
+    for (var m = 24; m <= 96; m++) {
+      var opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = names[m % 12] + (Math.floor(m / 12) - 1);
+      if (m === selected) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+
+  function _tryInitRangeSelectors(attempt) {
+    if (!document.getElementById('rng-bass-lo')) {
+      if (attempt < 25) setTimeout(function(){ _tryInitRangeSelectors(attempt + 1); }, 300);
+      return;
+    }
+    _buildNoteOptions('rng-bass-lo',  _bassRangeLo);
+    _buildNoteOptions('rng-bass-hi',  _bassRangeHi);
+    _buildNoteOptions('rng-chord-lo', _chordRangeLo);
+    _buildNoteOptions('rng-chord-hi', _chordRangeHi);
+  }
+  _tryInitRangeSelectors(0);
 
   initDelegation();
   _initMIDIOut();
@@ -5286,8 +5604,10 @@ _TOOLTIP_JS = """
 
   var _selRoot = window._selRoot = 'C';
   var _selMode = window._selMode = 'Major (Ionian)';
+  var _customIntervals = null; // set when user types custom intervals; overrides MODE_INTERVALS
   var _seqOrder = window._seqOrder = []; // ordered list of selected chord symbols
   var _selectedChords = window._selectedChords = {}; // sym → true
+  var _extraChords = {}; // sym → notes[] for chords added via the input box (off-palette)
 
   function _setGradioDropdown(elemId, value) {
     var wrap = document.getElementById(elemId) || document.querySelector('[id="'+elemId+'"]');
@@ -5338,6 +5658,8 @@ _TOOLTIP_JS = """
       c.title = m;
       c.onclick = function() {
         _selMode = window._selMode = m;
+        _customIntervals = null;
+        var ci = document.getElementById('pal-custom-input'); if (ci) ci.value = '';
         row.querySelectorAll('.pal-mode').forEach(function(x){x.classList.remove('on');});
         c.classList.add('on');
         _selectedChords = window._selectedChords = {}; _seqOrder = window._seqOrder = [];
@@ -5347,21 +5669,45 @@ _TOOLTIP_JS = """
     });
   }
 
-  // Custom intervals box → hidden Gradio textbox
+  // Parse a custom intervals string (same rules as Python's parse_mode_input):
+  //   space/comma separated numbers; if min>=1 treat as 1-based swarasthanas, else 0-based semitones
+  function _parseCustomIntervals(text) {
+    text = (text || '').trim();
+    if (!text) return null;
+    var nums = text.replace(/,/g, ' ').split(/\s+/).map(Number).filter(function(n){ return !isNaN(n) && isFinite(n); });
+    if (!nums.length) return null;
+    if (Math.min.apply(null, nums) >= 1) {
+      // 1-based swarasthanas
+      var s = {}; nums.forEach(function(n){ s[(n-1)%12]=true; });
+      return Object.keys(s).map(Number).sort(function(a,b){return a-b;});
+    }
+    var s = {}; nums.forEach(function(n){ s[((n%12)+12)%12]=true; });
+    return Object.keys(s).map(Number).sort(function(a,b){return a-b;});
+  }
+
+  function _applyCustomIntervals() {
+    var ci = document.getElementById('pal-custom-input');
+    if (!ci) return;
+    var parsed = _parseCustomIntervals(ci.value);
+    _customIntervals = parsed;
+    _selectedChords = window._selectedChords = {};
+    _seqOrder = window._seqOrder = [];
+    _rebuildTiles();
+  }
+
+  // Custom intervals box → parse in JS and rebuild tiles directly
   function _wireCustomIntervals() {
     var ci = document.getElementById('pal-custom-input');
-    var gr = document.getElementById('pal-custom-gradio');
-    if (!ci || !gr) { setTimeout(_wireCustomIntervals, 400); return; }
-    var grInput = gr.querySelector('input,textarea');
-    if (!grInput) { setTimeout(_wireCustomIntervals, 400); return; }
-    ci.oninput = function() {
-      var nativeSetter = Object.getOwnPropertyDescriptor(
-        window.HTMLInputElement.prototype, 'value').set;
-      nativeSetter.call(grInput, ci.value);
-      grInput.dispatchEvent(new Event('input', {bubbles:true}));
+    if (!ci) { setTimeout(_wireCustomIntervals, 400); return; }
+    ci.addEventListener('keydown', function(e) {
+      if (e.key === 'Enter') { _applyCustomIntervals(); }
+    });
+    ci.addEventListener('input', function() {
       clearTimeout(ci._t);
-      ci._t = setTimeout(_triggerGenerate, 600);
-    };
+      // Clear immediately if box is emptied so mode row takes over
+      if (!ci.value.trim()) { _customIntervals = null; _rebuildTiles(); return; }
+      ci._t = setTimeout(_applyCustomIntervals, 700);
+    });
   }
 
   // -- Tile grid: JS-native, no Gradio roundtrip ---------------------
@@ -5379,12 +5725,12 @@ _TOOLTIP_JS = """
   function _rebuildTiles() {
     var grid = document.getElementById('pal-tile-grid');
     if (!grid) return;
-    var intervals = MODE_INTERVALS[_selMode] || MODE_INTERVALS['Major (Ionian)'];
+    var intervals = _customIntervals || MODE_INTERVALS[_selMode] || MODE_INTERVALS['Major (Ionian)'];
     var chords = _buildScaleChords(_selRoot, intervals);
     grid.innerHTML = '';
-    // Remove chords from seqOrder that are no longer in scale
+    // Remove chords from seqOrder that are no longer in scale, but preserve manually-added extras
     var syms = chords.map(function(c){return c.sym;});
-    _seqOrder = window._seqOrder = _seqOrder.filter(function(s){ return syms.indexOf(s) >= 0; });
+    _seqOrder = window._seqOrder = _seqOrder.filter(function(s){ return syms.indexOf(s) >= 0 || !!_extraChords[s]; });
     chords.forEach(function(c) {
       var isOn = !!_selectedChords[c.sym];
       var tile = document.createElement('div');
@@ -5400,11 +5746,16 @@ _TOOLTIP_JS = """
         _selectedChords[c.sym] = on ? true : undefined;
         tile.classList.toggle('on', on);
         if (on) { if (_seqOrder.indexOf(c.sym)<0) _seqOrder.push(c.sym); }
-        else { _seqOrder = _seqOrder.filter(function(x){return x!==c.sym;}); }
+        else { _seqOrder = window._seqOrder = _seqOrder.filter(function(x){return x!==c.sym;}); }
         _rebuildSeq();
         _syncGradioCheckboxes();
       };
       grid.appendChild(tile);
+    });
+    // Expose all current palette chords so accompaniment can use them as fallback
+    window._currentPaletteTiles = chords.map(function(c) {
+      return {symbol: c.sym, label: c.sym,
+              notes: window._chordNotesFromSym ? window._chordNotesFromSym(c.sym) : [c.sym]};
     });
     _rebuildSeq();
   }
@@ -5431,7 +5782,7 @@ _TOOLTIP_JS = """
     row.innerHTML = '';
     _seqOrder.forEach(function(sym, i) {
       var pill = document.createElement('div');
-      pill.className = 'pal-seq-pill';
+      pill.className = 'pal-seq-pill' + (_extraChords[sym] ? ' custom' : '');
       pill.draggable = true;
       pill.dataset.i = i;
       var x = document.createElement('span');
@@ -5439,7 +5790,9 @@ _TOOLTIP_JS = """
       x.onclick = function(e) {
         e.stopPropagation();
         _seqOrder.splice(i,1);
+        window._seqOrder = _seqOrder;
         _selectedChords[sym] = undefined;
+        delete _extraChords[sym];
         _rebuildTiles();
       };
       pill.innerHTML = '<span>'+sym+'</span>';
@@ -5471,7 +5824,74 @@ _TOOLTIP_JS = """
     return found;
   }
 
-  // Initial tile build -- triggered once DOM is ready
+  // ── Add-chord input: parse symbol, validate, inject into sequence ─────────
+  var _VALID_ROOTS = {C:1,'C#':1,Db:1,D:1,'D#':1,Eb:1,E:1,F:1,'F#':1,Gb:1,G:1,'G#':1,Ab:1,A:1,'A#':1,Bb:1,B:1,Cb:1,'B#':1};
+  var _QUAL_ALIASES = {
+    'M7':'maj7','Δ7':'maj7','△7':'maj7','^7':'maj7','MA7':'maj7','ma7':'maj7',
+    'M9':'maj9','Δ9':'maj9','△9':'maj9',
+    'min':'m','mi':'m','-':'m',
+    'min7':'m7','mi7':'m7','-7':'m7',
+    'min9':'m9','mi9':'m9','-9':'m9',
+    '°':'dim','o':'dim','0':'dim',
+    '°7':'dim7','o7':'dim7',
+    'ø':'m7b5','ø7':'m7b5','m7♭5':'m7b5','m7b5':'m7b5',
+    '+':'aug',
+    'dom7':'7','dom':'7','dom9':'9',
+    'sus':'sus4'
+  };
+  var _VALID_QUALS = {'':1,'m':1,'dim':1,'aug':1,'maj7':1,'7':1,'m7':1,'m7b5':1,'dim7':1,
+                      'maj9':1,'m9':1,'9':1,'7#11':1,'sus4':1,'sus2':1};
+
+  function _parseChordSym(raw) {
+    raw = (raw || '').trim();
+    if (!raw) return {error: 'type a chord first'};
+    var rm = raw.match(/^([A-Ga-g])(##|bb|[#b])?/);
+    if (!rm) return {error: 'must start with A – G'};
+    var root = rm[1].toUpperCase() + (rm[2] || '').replace('##','#').replace('bb','b');
+    if (!_VALID_ROOTS[root]) return {error: root + ' not a valid root'};
+    var qual = raw.slice(rm[0].length).replace(/\s/g,'');
+    // Try alias table, then exact
+    if (_QUAL_ALIASES[qual] !== undefined) qual = _QUAL_ALIASES[qual];
+    if (!_VALID_QUALS[qual]) return {error: '"' + qual + '" not a known quality'};
+    var sym = root + qual;
+    // Use global _chordNotesFromSym exposed from IIFE 1
+    var notes = window._chordNotesFromSym ? window._chordNotesFromSym(sym) : null;
+    if (!notes || !notes.length || (notes.length===1 && notes[0]===sym)) {
+      return {error: 'could not compute notes for ' + sym};
+    }
+    return {sym: sym, notes: notes};
+  }
+
+  function _wireAddChord() {
+    var inp = document.getElementById('pal-add-input');
+    var btn = document.getElementById('pal-add-btn');
+    var err = document.getElementById('pal-add-err');
+    if (!inp || !btn) { setTimeout(_wireAddChord, 400); return; }
+
+    function doAdd() {
+      var parsed = _parseChordSym(inp.value);
+      if (parsed.error) {
+        err.textContent = parsed.error;
+        setTimeout(function(){ err.textContent=''; }, 2500);
+        return;
+      }
+      err.textContent = '';
+      var sym = parsed.sym;
+      _extraChords[sym] = parsed.notes;
+      if (_seqOrder.indexOf(sym) < 0) {
+        _seqOrder.push(sym);
+        window._seqOrder = _seqOrder;
+      }
+      _selectedChords[sym] = true;
+      inp.value = '';
+      _rebuildSeq();
+    }
+
+    btn.onclick = doAdd;
+    inp.addEventListener('keydown', function(e){ if (e.key==='Enter') doAdd(); });
+  }
+
+  // Initial tile build — triggered once DOM is ready
   function _watchPicker() {
     var grid = document.getElementById('pal-tile-grid');
     if (!grid) { setTimeout(_watchPicker, 400); return; }
@@ -5483,6 +5903,7 @@ _TOOLTIP_JS = """
     _buildNoteRow();
     _buildModeRow();
     _wireCustomIntervals();
+    _wireAddChord();
     _watchPicker();
     // Auto-generate on load
     setTimeout(_triggerGenerate, 800);
@@ -6300,8 +6721,16 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   font-size: 13px; font-weight: 500; color: var(--text, #ddd); cursor: grab; user-select: none; }
 .pal-seq-x { font-size: 15px; color: var(--text-dim, #888); cursor: pointer; line-height: 1; }
 .pal-seq-x:hover { color: #e2534a; }
+.pal-seq-pill.custom { border-style: dashed; border-color: #5a8abf; color: #9ecbf7; }
 .pal-seq-label { font-size: 11px; font-weight: 500; letter-spacing: .07em; text-transform: uppercase;
   color: var(--text-dim, #888); margin-bottom: 6px; margin-top: 4px; }
+#pal-add-chord-row { display:flex; align-items:center; gap:6px; margin-top:8px; }
+#pal-add-input { flex:1; padding:5px 10px; border-radius:6px; border:.5px solid #555;
+  background:#1a1a2e; color:inherit; font-family:inherit; font-size:13px; }
+#pal-add-btn { padding:5px 13px; border-radius:6px; background:#1a3d6e; color:#9ecbf7;
+  border:1px solid #5a8abf; cursor:pointer; font-size:13px; white-space:nowrap; }
+#pal-add-btn:hover { background:#1e5099; }
+#pal-add-err { font-size:11px; color:#e2534a; white-space:nowrap; }
 
 /* ═══════════════════════════════════════════════
    LIVE ACCOMPANIMENT -- hardware console
@@ -6830,7 +7259,12 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                 choices=[], value=[], interactive=True,
                 elem_id="chord_picker",
             )
-            gr.HTML('<div class="pal-seq-label">Sequence</div><div id="pal-seq-row"></div>')
+            gr.HTML('<div class="pal-seq-label">Sequence</div><div id="pal-seq-row"></div>'
+                    '<div id="pal-add-chord-row">'
+                    '<input id="pal-add-input" type="text" placeholder="Add chord: Ebmaj7, F#dim7, Bb7…"/>'
+                    '<button id="pal-add-btn">＋ Add</button>'
+                    '<span id="pal-add-err"></span>'
+                    '</div>')
             chord_data_store = gr.HTML(value="", elem_id="chord-data-wrapper")
             with gr.Row():
                 use_selected_btn    = gr.Button("→ Copy to chord input",    size="sm", scale=2)
@@ -6882,8 +7316,8 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
       <!-- Controls row -->
       <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:13px">
         <div style="flex:2;min-width:130px">
-          <div class="ac-lbl">BPM &nbsp;<span id="ctrl-bpm-val" style="color:#5ba3f5;font-size:13px">120</span></div>
-          <input id="ctrl-bpm" type="range" min="40" max="240" value="120" step="1"
+          <div class="ac-lbl">BPM &nbsp;<span id="ctrl-bpm-val" style="color:#5ba3f5;font-size:13px">85</span></div>
+          <input id="ctrl-bpm" type="range" min="40" max="240" value="85" step="1"
             style="width:100%;accent-color:#5ba3f5;cursor:pointer"
             oninput="document.getElementById('ctrl-bpm-val').textContent=this.value">
         </div>
@@ -6940,9 +7374,9 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
       <!-- Feel + Passing chord + MIDI Out row -->
       <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;margin-bottom:13px">
         <div style="flex:2;min-width:130px">
-          <div class="ac-lbl">Feel &nbsp;<span id="ctrl-feel-val" style="color:#5ba3f5;font-size:13px">0%</span>
+          <div class="ac-lbl">Feel &nbsp;<span id="ctrl-feel-val" style="color:#5ba3f5;font-size:13px">10%</span>
             <span style="color:#778899;font-size:10px;margin-left:6px">0=robotic · 100=loose</span></div>
-          <input id="ctrl-feel" type="range" min="0" max="1" value="0" step="0.01"
+          <input id="ctrl-feel" type="range" min="0" max="1" value="0.10" step="0.01"
             style="width:100%;accent-color:#a78bfa;cursor:pointer"
             oninput="window.setHumanize&&window.setHumanize(this.value);document.getElementById('ctrl-feel-val').textContent=Math.round(this.value*100)+'%'">
         </div>
@@ -6995,15 +7429,15 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <div class="mixer-strip">
             <div class="ac-lbl">Master</div>
-            <input id="mix-master" type="range" min="0" max="1.5" step="0.01" value="0.75" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-master" type="range" min="0" max="1.5" step="0.01" value="0.45" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('master',this.value);document.getElementById('mix-master-val').textContent=Math.round(this.value/1.5*100)+'%'">
-            <div id="mix-master-val" class="ac-val">50%</div>
+            <div id="mix-master-val" class="ac-val">30%</div>
           </div>
           <div class="mixer-strip">
             <div class="ac-lbl">Bass</div>
-            <input id="mix-bass" type="range" min="0" max="2" step="0.01" value="1.0" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-bass" type="range" min="0" max="2" step="0.01" value="0.6" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('bass',this.value);document.getElementById('mix-bass-val').textContent=Math.round(this.value/2*100)+'%'">
-            <div id="mix-bass-val" class="ac-val">50%</div>
+            <div id="mix-bass-val" class="ac-val">30%</div>
             <div class="dens-row" id="dens-bass">
               <button class="dens-btn" data-v="0" onclick="window._setDens('bass',0,this)">Off</button>
               <button class="dens-btn" data-v="1" onclick="window._setDens('bass',1,this)">Sparse</button>
@@ -7013,9 +7447,9 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
           </div>
           <div class="mixer-strip">
             <div class="ac-lbl" id="mix-chord-label">Chords</div>
-            <input id="mix-chord" type="range" min="0" max="2" step="0.01" value="1.0" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-chord" type="range" min="0" max="2" step="0.01" value="0.6" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('chord',this.value);document.getElementById('mix-chord-val').textContent=Math.round(this.value/2*100)+'%'">
-            <div id="mix-chord-val" class="ac-val">50%</div>
+            <div id="mix-chord-val" class="ac-val">30%</div>
             <div class="dens-row" id="dens-chord">
               <button class="dens-btn" data-v="0" onclick="window._setDens('chord',0,this)">Off</button>
               <button class="dens-btn" data-v="1" onclick="window._setDens('chord',1,this)">Sparse</button>
@@ -7079,9 +7513,9 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
           </div>
           <div class="mixer-strip">
             <div class="ac-lbl">Drums</div>
-            <input id="mix-drum" type="range" min="0" max="2" step="0.01" value="1.0" style="width:100%;accent-color:#c8874a;cursor:pointer"
+            <input id="mix-drum" type="range" min="0" max="2" step="0.01" value="0.6" style="width:100%;accent-color:#c8874a;cursor:pointer"
               oninput="window.setAccompVolume&&window.setAccompVolume('drum',this.value);document.getElementById('mix-drum-val').textContent=Math.round(this.value/2*100)+'%'">
-            <div id="mix-drum-val" class="ac-val">50%</div>
+            <div id="mix-drum-val" class="ac-val">30%</div>
             <div class="dens-row" id="dens-drum">
               <button class="dens-btn" data-v="0" onclick="window._setDens('drum',0,this)">Off</button>
               <button class="dens-btn active" data-v="1" onclick="window._setDens('drum',1,this)">Sparse</button>
@@ -7197,7 +7631,65 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
           <div id="listen-status" style="flex:1;font-family:'JetBrains Mono',monospace;color:var(--amber);font-size:11px;text-align:right;min-width:80px">--</div>
         </div>
       </div>
-    
+
+      <!-- Range -->
+      <div style="margin-top:11px;padding:11px 13px;background:#060c16;border:1px solid #122035;border-radius:8px">
+        <div style="color:#c8874a;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px">&#127929; Range</div>
+        <div style="display:flex;flex-direction:column;gap:7px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:44px;flex-shrink:0;font-size:11px;color:var(--mist)">Bass</div>
+            <select id="rng-bass-lo" onchange="window.setRangeNote&&window.setRangeNote('bass','lo',this.value)" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px"></select>
+            <span style="color:#c8874a;font-size:11px;flex-shrink:0">&#8211;</span>
+            <select id="rng-bass-hi" onchange="window.setRangeNote&&window.setRangeNote('bass','hi',this.value)" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px"></select>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <div style="width:44px;flex-shrink:0;font-size:11px;color:var(--mist)">Chord</div>
+            <select id="rng-chord-lo" onchange="window.setRangeNote&&window.setRangeNote('chord','lo',this.value)" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px"></select>
+            <span style="color:#c8874a;font-size:11px;flex-shrink:0">&#8211;</span>
+            <select id="rng-chord-hi" onchange="window.setRangeNote&&window.setRangeNote('chord','hi',this.value)" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px"></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- Melodic Response -->
+      <div style="margin-top:11px;padding:11px 13px;background:#060c16;border:1px solid #122035;border-radius:8px">
+        <div style="color:#c8874a;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;margin-bottom:9px">&#127925; Melodic Response</div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+          <button id="mel-arm-btn" onclick="window.armPhrase&&window.armPhrase()"
+            style="background:#1a3050;color:#8af7b8;border:1px solid #2a7040;border-radius:5px;padding:4px 10px;font-size:12px;cursor:pointer">&#128225; Arm</button>
+          <button onclick="window.playCaptured&&window.playCaptured()"
+            style="background:#0a1628;border:1px solid #2a4a6a;border-radius:5px;color:#c8c8d0;padding:4px 10px;font-size:12px;cursor:pointer">&#9654; Play</button>
+          <button onclick="window.generateMelodicResponse&&window.generateMelodicResponse()"
+            style="background:#0a1628;border:1px solid #2a4a6a;border-radius:5px;color:#c8c8d0;padding:4px 10px;font-size:12px;cursor:pointer">&#10022; Generate</button>
+          <button onclick="window.clearPhrase&&window.clearPhrase()"
+            style="background:#0a1628;border:1px solid #2a4a6a;border-radius:5px;color:#c8c8d0;padding:4px 10px;font-size:12px;cursor:pointer;opacity:.6">&#10005; Clear</button>
+          <div id="mel-status" style="flex:1;color:var(--amber);font-size:11px;font-style:italic">&#8212;</div>
+        </div>
+        <div style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap">
+          <div>
+            <div style="font-size:10px;color:var(--mist);margin-bottom:3px">Style</div>
+            <select id="mel-style" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px;width:88px">
+              <option value="answer" selected>Answer</option>
+              <option value="imitate">Imitate</option>
+              <option value="free">Free</option>
+            </select>
+          </div>
+          <div>
+            <div style="font-size:10px;color:var(--mist);margin-bottom:3px">Length</div>
+            <select id="mel-bars" style="background:#0a1628;border:1px solid #2a4a6a;border-radius:4px;color:#c8c8d0;font-size:11px;padding:2px 4px;width:72px">
+              <option value="1">1 bar</option>
+              <option value="2" selected>2 bars</option>
+              <option value="4">4 bars</option>
+              <option value="8">8 bars</option>
+            </select>
+          </div>
+          <label style="display:flex;align-items:center;gap:5px;cursor:pointer;padding-bottom:2px;font-size:11px;color:var(--mist)">
+            <input type="checkbox" id="mel-auto-respond" style="cursor:pointer;accent-color:#c8874a">
+            Auto after phrase
+          </label>
+        </div>
+      </div>
+
     </div>
     </div></div>
     """)
