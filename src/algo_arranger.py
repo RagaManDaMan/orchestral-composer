@@ -1,5 +1,6 @@
 """
-Algorithmic generation of harmony (chord voicings) and bass lines.
+Algorithmic generation of harmony (chord voicings), bass lines, and Synfire-style
+contour/motif melodies.
 
 These functions bypass the LLM entirely. Given a chord timeline they produce
 musically correct, rhythmically coherent parts every time — no model needed.
@@ -604,6 +605,414 @@ def _freely(
     return notes
 
 
+# ---------------------------------------------------------------------------
+# Synfire-style melody generators (contour + motif)
+# ---------------------------------------------------------------------------
+
+def make_contour_melody(
+    chord_timeline: list[tuple[float, str]],
+    total_beats: float,
+    lo: int,
+    hi: int,
+    contour: str = "Arch",
+    notes_per_beat: float = 2.0,
+) -> list[dict]:
+    """
+    Generate a melody whose pitch trajectory follows a named contour shape.
+
+    Contour shapes (Synfire-inspired: shape defined independently of harmony,
+    then fitted to the chord tones at each moment):
+      Rise    — pitch climbs steadily from lo to hi over the piece
+      Fall    — pitch descends from hi to lo
+      Arch    — rises to the midpoint then falls (classic melodic arc)
+      Valley  — falls to the midpoint then rises
+      Wave    — two full sine-wave cycles (up-down-up-down)
+      Step    — alternates between low and high registers every bar
+
+    For each note slot, the target pitch height (0–1) is mapped to the MIDI
+    range, then the nearest available chord tone is chosen.  This separates
+    *shape* from *harmony* exactly as Synfire does.
+    """
+    step = 1.0 / max(0.5, notes_per_beat)
+    notes: list[dict] = []
+    n_steps = max(1, int(total_beats / step))
+
+    for i in range(n_steps):
+        t = i * step
+        if t >= total_beats:
+            break
+
+        # Position in piece as 0→1
+        pos = t / total_beats
+
+        # Contour → target height 0→1
+        if contour == "Rise":
+            height = pos
+        elif contour == "Fall":
+            height = 1.0 - pos
+        elif contour == "Arch":
+            height = math.sin(math.pi * pos)
+        elif contour == "Valley":
+            height = 1.0 - math.sin(math.pi * pos)
+        elif contour == "Wave":
+            height = 0.5 + 0.5 * math.sin(2 * math.pi * 2 * pos)
+        else:  # Step
+            height = 0.8 if int(pos * 8) % 2 == 0 else 0.3
+
+        target_midi = lo + int(height * (hi - lo))
+
+        # Get chord tones at this beat
+        chord_sym = chord_timeline[0][1]
+        for b, sym in chord_timeline:
+            if t >= b:
+                chord_sym = sym
+        try:
+            root, intervals = chord_tones_from_symbol(chord_sym)
+        except Exception:
+            intervals = [0, 4, 7]
+            root = "C"
+        root_pc = _NOTE_PC.get(root, 0)
+        candidates = []
+        for octave in range(2, 8):
+            for iv in intervals:
+                m = (root_pc + iv) % 12 + octave * 12
+                if lo <= m <= hi:
+                    candidates.append(m)
+
+        if not candidates:
+            continue
+
+        # Pick the candidate closest to the target height
+        midi = min(candidates, key=lambda m: abs(m - target_midi))
+
+        # Velocity: louder on strong beats, softer off-beats
+        is_downbeat = abs((t % 1.0)) < 0.05
+        vel = 78 if is_downbeat else 62
+
+        dur = min(step * 0.88, total_beats - t)
+        notes.append({
+            "note": midi_to_note_name(midi),
+            "start_beat": round(t * 4) / 4,
+            "duration_beats": dur,
+            "velocity": vel,
+        })
+
+    return notes
+
+
+def make_motif_melody(
+    chord_timeline: list[tuple[float, str]],
+    total_beats: float,
+    lo: int,
+    hi: int,
+    motif_str: str = "C4 E4 G4 E4",
+    notes_per_beat: float = 2.0,
+) -> list[dict]:
+    """
+    Stamp a short motif across the full piece, transposing it to fit each chord.
+
+    The motif is parsed as space-separated note names (e.g. "C4 E4 G4 E4").
+    Its *intervals* (semitone differences between consecutive notes) are extracted.
+    At each chord change, the motif is re-rooted to the nearest chord tone to
+    the previous note, preserving the interval shape but fitting the harmony.
+
+    This is the Synfire "figure" concept: a melodic cell that reharmonises
+    automatically as the chords change beneath it.
+    """
+    # Parse motif into MIDI note numbers
+    motif_midis: list[int] = []
+    for token in motif_str.strip().split():
+        try:
+            motif_midis.append(note_name_to_midi(token))
+        except Exception:
+            pass
+    if not motif_midis:
+        return []
+
+    # Extract relative intervals from the motif
+    intervals_semitones = [0] + [motif_midis[i] - motif_midis[i - 1] for i in range(1, len(motif_midis))]
+    step = 1.0 / max(0.5, notes_per_beat)
+    motif_len = len(motif_midis)
+
+    notes: list[dict] = []
+    current_root = (lo + hi) // 2  # starting anchor
+    t = 0.0
+    motif_idx = 0
+
+    while t < total_beats:
+        # Find active chord
+        chord_sym = chord_timeline[0][1]
+        for b, sym in chord_timeline:
+            if t >= b:
+                chord_sym = sym
+
+        # On chord boundaries, snap the motif root to nearest chord tone
+        is_chord_start = any(abs(t - b) < 0.05 for b, _ in chord_timeline)
+        if is_chord_start or t < 0.01:
+            try:
+                root, chord_ivs = chord_tones_from_symbol(chord_sym)
+            except Exception:
+                chord_ivs = [0, 4, 7]
+                root = "C"
+            root_pc = _NOTE_PC.get(root, 0)
+            # Find chord tone closest to current_root
+            best = current_root
+            best_dist = 999
+            for octave in range(2, 8):
+                for iv in chord_ivs:
+                    m = (root_pc + iv) % 12 + octave * 12
+                    if lo <= m <= hi and abs(m - current_root) < best_dist:
+                        best_dist = abs(m - current_root)
+                        best = m
+            current_root = best
+            motif_idx = 0  # restart motif on chord change
+
+        # Build note from motif interval
+        midi = current_root + intervals_semitones[motif_idx % motif_len]
+        midi = max(lo, min(hi, midi))
+
+        is_downbeat = abs((t % 1.0)) < 0.05
+        vel = 80 if is_downbeat else 64
+        dur = min(step * 0.88, total_beats - t)
+
+        notes.append({
+            "note": midi_to_note_name(midi),
+            "start_beat": round(t * 4) / 4,
+            "duration_beats": dur,
+            "velocity": vel,
+        })
+
+        current_root = midi
+        motif_idx += 1
+        t += step
+
+    return notes
+
+
+def vary_orchestration(orchestration: dict, technique: str = "invert") -> dict:
+    """
+    Return a copy of the orchestration with the melody part transformed.
+
+    Synfire-style section variation: take a generated melody and derive a B-section
+    variant from it without touching the harmony/bass.
+
+    Techniques:
+      invert     — flip all intervals upside-down (melodic inversion around the
+                   midpoint of the melody's range)
+      retrograde — reverse the time order of all notes
+      augment    — double all note durations, halving note density
+      diminish   — halve all note durations, doubling note density
+    """
+    import copy
+    result = copy.deepcopy(orchestration)
+
+    # Find melody parts: anything not bass/harmony
+    _MELODY_INST = frozenset({
+        "piano_melody", "violin_melody", "flute_melody", "cello_melody",
+        "strings_melody", "alto_sax", "tenor_sax", "harmonica",
+        "sitar", "nadaswaram", "sarod",
+    })
+    mel_parts = [p for p in result.get("parts", {}) if p in _MELODY_INST]
+    if not mel_parts:
+        # Fall back to first non-empty part
+        mel_parts = [p for p, ns in result["parts"].items() if ns][:1]
+
+    for part in mel_parts:
+        ns = result["parts"][part]
+        if not ns:
+            continue
+
+        if technique == "invert":
+            midis = [note_name_to_midi(n["note"]) for n in ns]
+            if not midis:
+                continue
+            axis = (min(midis) + max(midis)) // 2
+            for i, n in enumerate(ns):
+                m = note_name_to_midi(n["note"])
+                n["note"] = midi_to_note_name(axis * 2 - m)
+
+        elif technique == "retrograde":
+            beats = [n["start_beat"] for n in ns]
+            durs  = [n["duration_beats"] for n in ns]
+            rev_notes = list(reversed([n["note"] for n in ns]))
+            rev_vels  = list(reversed([n["velocity"] for n in ns]))
+            for i, n in enumerate(ns):
+                n["note"]     = rev_notes[i]
+                n["velocity"] = rev_vels[i]
+                n["duration_beats"] = durs[i]
+
+        elif technique == "augment":
+            total = max((n["start_beat"] + n["duration_beats"]) for n in ns)
+            for n in ns:
+                n["start_beat"]      = n["start_beat"] * 2
+                n["duration_beats"]  = n["duration_beats"] * 2
+            # Filter notes that now exceed total_beats*2 (caller decides)
+
+        elif technique == "diminish":
+            for n in ns:
+                n["start_beat"]     = n["start_beat"] / 2
+                n["duration_beats"] = max(0.125, n["duration_beats"] / 2)
+
+    return result
+
+
+# GM channel-9 drum note names (MIDI note → note name mapping)
+_DRUM_KICK   = "C2"   # MIDI 36
+_DRUM_SNARE  = "D2"   # MIDI 38
+_DRUM_HIHAT  = "F#2"  # MIDI 42 closed hi-hat
+_DRUM_HIHAT_O= "A#2"  # MIDI 46 open hi-hat
+_DRUM_RIDE   = "D#3"  # MIDI 51 ride cymbal
+_DRUM_CRASH  = "C#3"  # MIDI 49 crash
+_DRUM_HI_TOM = "D3"   # MIDI 50
+_DRUM_MID_TOM= "B2"   # MIDI 47
+_DRUM_FLOOR  = "A2"   # MIDI 45 floor tom
+
+def _drum_note(note_name: str, beat: float, vel: int, dur: float = 0.2) -> dict:
+    return {"note": note_name, "start_beat": round(beat, 4),
+            "duration_beats": dur, "velocity": vel}
+
+def make_drum_part(
+    total_beats: float,
+    beats_per_bar: float = 4.0,
+    style: str = "pop",
+) -> list[dict]:
+    """
+    Generate a genre-appropriate drum track on GM channel 9.
+
+    Notes use pitch names that map to GM drum numbers:
+      C2=kick(36)  D2=snare(38)  F#2=closed-hat(42)
+      A#2=open-hat(46)  D#3=ride(51)  C#3=crash(49)
+
+    Styles: pop, rock, jazz, funk, bossa, hiphop, brush, waltz, latin
+    """
+    notes: list[dict] = []
+    bar = 0.0
+    bpb = beats_per_bar
+
+    while bar < total_beats:
+        remaining = total_beats - bar
+
+        if style in ("pop", "rock"):
+            # Kick: beat 1 & 3, Snare: beat 2 & 4, 8th-note hats
+            for b in range(int(bpb)):
+                if b in (0, 2):
+                    notes.append(_drum_note(_DRUM_KICK,  bar + b, 95))
+                if b in (1, 3):
+                    notes.append(_drum_note(_DRUM_SNARE, bar + b, 85))
+                notes.append(_drum_note(_DRUM_HIHAT, bar + b,       60))
+                notes.append(_drum_note(_DRUM_HIHAT, bar + b + 0.5, 45))
+
+        elif style == "funk":
+            # 16th-note kick syncopation, snare on 2.5 & 4, tight hats
+            kick_offsets = [0, 0.75, 2.25, 2.5, 3.75]
+            snare_offsets = [1, 2.5, 3]
+            for k in kick_offsets:
+                if bar + k < total_beats:
+                    notes.append(_drum_note(_DRUM_KICK,  bar + k, 90 if k == 0 else 75))
+            for s in snare_offsets:
+                if bar + s < total_beats:
+                    notes.append(_drum_note(_DRUM_SNARE, bar + s, 80))
+            for h in [i * 0.25 for i in range(int(bpb * 4))]:
+                if bar + h < total_beats:
+                    vel = 55 if h % 0.5 == 0 else 38
+                    notes.append(_drum_note(_DRUM_HIHAT, bar + h, vel))
+
+        elif style in ("jazz", "bebop"):
+            # Ride cymbal on beat + offbeat (swing), sparse kick & snare
+            ride_offsets = [0, 0.67, 1, 1.67, 2, 2.67, 3, 3.67]
+            for r in ride_offsets:
+                if bar + r < total_beats:
+                    notes.append(_drum_note(_DRUM_RIDE, bar + r, 58 if r % 1 == 0 else 44))
+            if remaining >= 1:
+                notes.append(_drum_note(_DRUM_KICK,  bar, 60))           # light kick on 1
+            if remaining >= 3:
+                notes.append(_drum_note(_DRUM_SNARE, bar + 2, 50))      # brush-like snare on 3
+
+        elif style == "brush":
+            # Very sparse: ride + occasional snare
+            for b in range(int(bpb)):
+                if bar + b < total_beats:
+                    notes.append(_drum_note(_DRUM_RIDE, bar + b, 48))
+                    if b % 2 == 1:
+                        notes.append(_drum_note(_DRUM_SNARE, bar + b, 38))
+
+        elif style == "bossa":
+            # Bossa nova: rim-shot pattern (use snare for rim), light kick
+            rim_offsets = [0, 0.75, 1.5, 2.5, 3.25]
+            for r in rim_offsets:
+                if bar + r < total_beats:
+                    notes.append(_drum_note(_DRUM_SNARE, bar + r, 52))
+            if remaining >= 0.5:
+                notes.append(_drum_note(_DRUM_KICK, bar, 70))
+            if remaining >= 2.5:
+                notes.append(_drum_note(_DRUM_KICK, bar + 2, 65))
+            for h in [0, 0.5, 1, 1.5, 2, 2.5, 3, 3.5]:
+                if bar + h < total_beats:
+                    notes.append(_drum_note(_DRUM_HIHAT, bar + h, 35))
+
+        elif style == "hiphop":
+            # Boom-bap: kick 1 + 2.5, snare on 3, sparse hats
+            boom_bap = [(0, _DRUM_KICK, 95), (2, _DRUM_KICK, 80),
+                        (2.5, _DRUM_KICK, 70), (1, _DRUM_SNARE, 88), (3, _DRUM_SNARE, 85)]
+            for off, note, vel in boom_bap:
+                if bar + off < total_beats:
+                    notes.append(_drum_note(note, bar + off, vel))
+            for h in [0, 1, 2, 3]:
+                if bar + h < total_beats:
+                    notes.append(_drum_note(_DRUM_HIHAT, bar + h, 42))
+
+        elif style == "waltz":
+            # 3/4 or 6/8: kick on 1, hi-hat on 2 & 3
+            notes.append(_drum_note(_DRUM_KICK,  bar, 88))
+            for b in range(1, int(bpb)):
+                if bar + b < total_beats:
+                    notes.append(_drum_note(_DRUM_HIHAT, bar + b, 50))
+
+        elif style == "latin":
+            # Clave-like: hi-hat 8ths, kick + snare syncopated
+            clave = [0, 0.75, 1.5, 2.5, 3.25]
+            for c in clave:
+                if bar + c < total_beats:
+                    notes.append(_drum_note(_DRUM_SNARE, bar + c, 60))
+            for h in [i * 0.5 for i in range(int(bpb * 2))]:
+                if bar + h < total_beats:
+                    notes.append(_drum_note(_DRUM_HIHAT, bar + h, 42))
+            if remaining >= 0.5:
+                notes.append(_drum_note(_DRUM_KICK, bar, 80))
+
+        else:  # default: basic 4/4
+            notes.append(_drum_note(_DRUM_KICK,  bar,     88))
+            notes.append(_drum_note(_DRUM_SNARE, bar + 2, 80))
+            for h in range(int(bpb)):
+                if bar + h < total_beats:
+                    notes.append(_drum_note(_DRUM_HIHAT, bar + h, 50))
+
+        bar += bpb
+
+    return notes
+
+
+# Drum style per preset name
+_DRUM_STYLE_MAP: dict[str, str] = {
+    "Jazz Quartet":     "jazz",
+    "Jazz Big Band":    "jazz",
+    "Jazz Trio (Brush)":"brush",
+    "Bebop Quintet":    "bebop",
+    "Blues Band":       "rock",
+    "Blues Trio":       "rock",
+    "Funk Band":        "funk",
+    "Pop Band":         "pop",
+    "Retro Pop (80s)":  "pop",
+    "City Pop":         "funk",
+    "Hip-Hop Beat":     "hiphop",
+    "Rock Band":        "rock",
+    "Bossa Nova":       "bossa",
+    "Bollywood Modern": "latin",
+    "Dholak Party":     "latin",
+    "Koothu / Folk":    "latin",
+}
+
+
 def make_chord_part(
     chord_timeline: list[tuple[float, str]],
     total_beats: float,
@@ -747,7 +1156,13 @@ def inject_algo_parts(
     # ── Legacy flat mode ──────────────────────────────────────────────────────
     korvai_active = korvai_params is not None
 
+    # Generate drum part if present in orchestration
+    preset_name = orchestration.get("preset", "")
+    drum_style = _DRUM_STYLE_MAP.get(preset_name, "pop")
     for inst in list(orchestration.get("parts", {}).keys()):
+        if inst == "drums":
+            orchestration["parts"][inst] = make_drum_part(total_beats, beats_per_bar, drum_style)
+            continue
         if inst in chordal_instruments:
             orchestration["parts"][inst] = make_chord_part(
                 chord_timeline, total_beats, inst, instrument_ranges,
@@ -806,6 +1221,9 @@ def _inject_sectioned(
         kparams  = sec.get("korvai_params")
 
         for inst in part_notes:
+            # Drums: generated once for the full piece, handled after loop
+            if inst == "drums":
+                continue
             # Melody parts are not touched (unless fill mode)
             if inst not in chordal_instruments and inst not in bass_instruments:
                 if fill_melody_parts and not orchestration["parts"].get(inst):
@@ -862,9 +1280,13 @@ def _inject_sectioned(
 
             part_notes[inst].extend(notes)
 
-    # Write accumulated notes back; preserve existing melody content
+    # Generate drums for full piece (not per-section) and write back
+    preset_name = orchestration.get("preset", "")
+    drum_style = _DRUM_STYLE_MAP.get(preset_name, "pop")
     for inst in part_notes:
-        if inst in chordal_instruments or inst in bass_instruments or fill_melody_parts:
+        if inst == "drums":
+            orchestration["parts"][inst] = make_drum_part(total_beats, beats_per_bar, drum_style)
+        elif inst in chordal_instruments or inst in bass_instruments or fill_melody_parts:
             orchestration["parts"][inst] = part_notes[inst]
 
     return orchestration

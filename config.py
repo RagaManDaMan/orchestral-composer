@@ -75,57 +75,57 @@ INSTRUMENT_PRESETS = {
 
     # ── Jazz ──────────────────────────────────────────────────────────────
     "Jazz Quartet": [
-        "alto_sax", "piano_harmony", "acoustic_bass",
+        "alto_sax", "piano_harmony", "acoustic_bass", "drums",
     ],
     "Jazz Big Band": [
         "trumpet_melody", "tenor_sax", "trombone",
-        "piano_harmony", "acoustic_bass",
+        "piano_harmony", "acoustic_bass", "drums",
     ],
     "Jazz Trio (Brush)": [
-        "piano_melody", "acoustic_bass",
+        "piano_melody", "acoustic_bass", "drums",
     ],
     "Bebop Quintet": [
         "alto_sax", "trumpet_melody",
-        "piano_harmony", "acoustic_bass",
+        "piano_harmony", "acoustic_bass", "drums",
     ],
 
     # ── Blues ─────────────────────────────────────────────────────────────
     "Blues Band": [
-        "harmonica", "electric_guitar", "piano_harmony", "acoustic_bass",
+        "harmonica", "electric_guitar", "piano_harmony", "acoustic_bass", "drums",
     ],
     "Blues Trio": [
-        "electric_guitar", "piano_harmony", "acoustic_bass",
+        "electric_guitar", "piano_harmony", "acoustic_bass", "drums",
     ],
 
     # ── Funk / Soul ────────────────────────────────────────────────────────
     "Funk Band": [
-        "tenor_sax", "electric_guitar", "electric_piano", "electric_bass",
+        "tenor_sax", "electric_guitar", "electric_piano", "electric_bass", "drums",
     ],
 
     # ── Pop ───────────────────────────────────────────────────────────────
     "Pop Band": [
-        "synth_lead", "electric_guitar", "synth_pad", "electric_bass",
+        "synth_lead", "electric_guitar", "synth_pad", "electric_bass", "drums",
     ],
     "Retro Pop (80s)": [
-        "dx7_epiano", "synth_pad", "electric_bass",
+        "dx7_epiano", "synth_pad", "electric_bass", "drums",
     ],
     "City Pop": [
-        "dx7_epiano", "electric_guitar", "synth_pad", "slap_bass",
+        "dx7_epiano", "electric_guitar", "synth_pad", "slap_bass", "drums",
     ],
 
     # ── Hip-Hop ────────────────────────────────────────────────────────────
     "Hip-Hop Beat": [
-        "synth_lead", "synth_pad", "electric_bass",
+        "synth_lead", "synth_pad", "electric_bass", "drums",
     ],
 
     # ── Rock ──────────────────────────────────────────────────────────────
     "Rock Band": [
-        "electric_guitar", "overdriven_guitar", "electric_bass",
+        "electric_guitar", "overdriven_guitar", "electric_bass", "drums",
     ],
 
     # ── Bossa Nova ────────────────────────────────────────────────────────
     "Bossa Nova": [
-        "flute_melody", "nylon_guitar", "acoustic_bass",
+        "flute_melody", "nylon_guitar", "acoustic_bass", "drums",
     ],
 
     # ── Indian Classical ──────────────────────────────────────────────────
@@ -161,16 +161,19 @@ INSTRUMENT_PRESETS = {
         "strings_harmony",
         "mandolin",
         "electric_bass",
+        "drums",
     ],
     "Koothu / Folk": [
         "nadaswaram",
         "strings_harmony",
         "acoustic_bass",
+        "drums",
     ],
     "Dholak Party": [
         "strings_melody",
         "harmonium",
         "acoustic_bass",
+        "drums",
     ],
 }
 

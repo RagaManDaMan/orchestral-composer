@@ -31,16 +31,23 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
-import librosa
-import soundfile as sf
-from scipy.signal import butter, sosfilt, fftconvolve
 
-# noisereduce is the only new dependency
-try:
-    import noisereduce as nr
-    _HAS_NR = True
-except ImportError:
-    _HAS_NR = False
+# Heavy imports deferred to avoid DLL load issues at startup
+def _lazy_imports():
+    global librosa, sf, butter, sosfilt, fftconvolve, nr, _HAS_NR
+    import librosa as _lib
+    import soundfile as _sf
+    from scipy.signal import butter as _b, sosfilt as _s, fftconvolve as _f
+    librosa = _lib; sf = _sf
+    butter = _b; sosfilt = _s; fftconvolve = _f
+    try:
+        import noisereduce as _nr
+        nr = _nr; _HAS_NR = True
+    except ImportError:
+        nr = None; _HAS_NR = False
+
+librosa = sf = butter = sosfilt = fftconvolve = nr = None
+_HAS_NR = False
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +95,7 @@ def process_vocal(
         output_path  — path to the processed WAV file
         info_dict    — dict with tuning_offset_cents, notes_corrected, etc.
     """
+    _lazy_imports()
     info: dict = {}
 
     # 1. Load
@@ -472,6 +480,7 @@ def process_vocal_ui(
     """
     Thin wrapper for Gradio. Returns (output_path, status_message).
     """
+    _lazy_imports()
     if not audio_path:
         return audio_path, "No audio provided."
     try:

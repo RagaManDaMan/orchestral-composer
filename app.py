@@ -47,6 +47,20 @@ _start_preview_server()
 
 import gradio as gr
 
+# Patch gradio_client bug: json_schema_to_python_type crashes on boolean schemas
+# (additionalProperties: false/true) — causes health-check failure on launch.
+try:
+    import gradio_client.utils as _gcu
+    _orig_j2p = _gcu.json_schema_to_python_type
+    def _safe_j2p(schema, defs=None):
+        try:
+            return _orig_j2p(schema, defs)
+        except (TypeError, AttributeError):
+            return "any"
+    _gcu.json_schema_to_python_type = _safe_j2p
+except Exception:
+    pass
+
 from config import DEFAULT_TEMPO_BPM, INSTRUMENT_PRESETS, PRESET_STYLE_HINTS, DEFAULT_NOTES_PER_BEAT, DEFAULT_MAX_TOKENS
 DEFAULT_TEMPERATURE = 0.7
 from src.transcribe import transcribe_audio, quantize_to_grid, detect_key, detect_tempo
@@ -315,31 +329,6 @@ def crystallize_bridge(payload: str):
     return gr.update(value=chords), gr.update(value="Manual"), gr.update(value=key_str), gr.update(value=tempo)
 
 
-def ghost_orch_bridge(payload: str):
-    """Same pre-fill but returns Harmony-only melody source for fast generation."""
-    import json
-    try:
-        d = json.loads(payload)
-    except Exception:
-        return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
-    chords = d.get("chords", "Dm7 G7 Cmaj7 Am7")
-    root   = d.get("root", "C")
-    mode   = d.get("mode", "Major (Ionian)")
-    tempo  = float(d.get("bpm", 120))
-    mode_map = {
-        "Major (Ionian)": "major", "Natural Minor (Aeolian)": "minor",
-        "Dorian": "dorian", "Phrygian": "phrygian", "Lydian": "lydian",
-        "Mixolydian": "mixolydian", "Locrian": "locrian",
-        "Harmonic Minor": "harmonic minor", "Melodic Minor": "melodic minor",
-        "Major Pentatonic": "major pentatonic", "Minor Pentatonic": "minor pentatonic",
-        "Blues Scale": "blues", "Whole Tone": "whole tone",
-    }
-    mode_str = mode_map.get(mode, "major")
-    key_str  = f"{root} {mode_str}"
-    # Harmony only = fast, no AI, suitable for background orchestra
-    return (gr.update(value=chords), gr.update(value="Manual"),
-            gr.update(value=key_str), gr.update(value=tempo),
-            gr.update(value="Harmony only"))
 
 
 # ---------------------------------------------------------------------------
@@ -683,7 +672,6 @@ def _build_chord_timeline(
 _ROLL_CSS = """
   *{box-sizing:border-box;margin:0;padding:0;}
   body{background:#0a0d12;font-family:'Segoe UI',system-ui,sans-serif;font-size:11px;color:#8899aa;user-select:none;}
-  midi-player{display:block;width:100%;margin-bottom:6px;}
   #toolbar{display:flex;gap:4px;align-items:center;padding:5px 6px;background:#0d1018;border-bottom:1px solid #1a2030;flex-wrap:wrap;}
   .tb{padding:4px 11px;border:1px solid #1e2a3a;border-radius:4px;background:#141c28;color:#6688aa;cursor:pointer;font-size:10px;font-family:inherit;transition:all .12s;}
   .tb:hover{background:#1a2538;color:#99ccff;border-color:#2a3a50;}
@@ -701,6 +689,97 @@ _ROLL_CSS = """
   #vel-label{position:absolute;left:4px;top:3px;font-size:8px;color:#223344;pointer-events:none;}
   #tracks-legend{display:flex;gap:10px;flex-wrap:wrap;padding:4px 6px;font-size:9px;background:#090d14;border-top:1px solid #0f1820;}
   .track-dot{display:inline-block;width:7px;height:7px;border-radius:2px;margin-right:3px;vertical-align:middle;}
+"""
+
+_DRUM_SYNTH_JS = r"""
+/* Web-Audio drum synthesizer using Tone.js's own AudioContext for tight sync */
+(function(){
+  function _ctx(){ return Tone.getContext().rawContext; }
+
+  function _kick(t, vel){
+    var ctx=_ctx(), g=ctx.createGain();
+    g.gain.setValueAtTime(vel*2.0, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t+0.45);
+    g.connect(ctx.destination);
+    var o=ctx.createOscillator(); o.type='sine';
+    o.frequency.setValueAtTime(180, t);
+    o.frequency.exponentialRampToValueAtTime(28, t+0.35);
+    o.connect(g); o.start(t); o.stop(t+0.46);
+    /* punch layer */
+    var pg=ctx.createGain(); pg.gain.setValueAtTime(vel*0.8,t); pg.gain.exponentialRampToValueAtTime(0.001,t+0.05);
+    pg.connect(ctx.destination);
+    var buf=ctx.createBuffer(1,Math.ceil(ctx.sampleRate*0.05),ctx.sampleRate);
+    var d=buf.getChannelData(0); for(var i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+    var ns=ctx.createBufferSource(); ns.buffer=buf;
+    var lp=ctx.createBiquadFilter(); lp.type='lowpass'; lp.frequency.value=200;
+    ns.connect(lp); lp.connect(pg); ns.start(t);
+  }
+
+  function _snare(t, vel){
+    var ctx=_ctx();
+    /* noise burst */
+    var dur=0.18;
+    var ng=ctx.createGain(); ng.gain.setValueAtTime(vel*1.2,t); ng.gain.exponentialRampToValueAtTime(0.001,t+dur);
+    ng.connect(ctx.destination);
+    var buf=ctx.createBuffer(1,Math.ceil(ctx.sampleRate*dur),ctx.sampleRate);
+    var d=buf.getChannelData(0); for(var i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+    var ns=ctx.createBufferSource(); ns.buffer=buf;
+    var hp=ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=1500;
+    var bp=ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=3000; bp.Q.value=0.7;
+    ns.connect(hp); hp.connect(bp); bp.connect(ng);
+    ns.start(t);
+    /* body tone */
+    var og=ctx.createGain(); og.gain.setValueAtTime(vel*0.6,t); og.gain.exponentialRampToValueAtTime(0.001,t+0.09);
+    og.connect(ctx.destination);
+    var o=ctx.createOscillator(); o.type='triangle'; o.frequency.value=185;
+    o.connect(og); o.start(t); o.stop(t+0.09);
+  }
+
+  function _hihat(t, vel, open){
+    var ctx=_ctx(), dur=open?0.35:0.045;
+    var g=ctx.createGain(); g.gain.setValueAtTime(vel*0.7,t); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+    g.connect(ctx.destination);
+    var buf=ctx.createBuffer(1,Math.ceil(ctx.sampleRate*Math.max(dur,0.05)),ctx.sampleRate);
+    var d=buf.getChannelData(0); for(var i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+    var ns=ctx.createBufferSource(); ns.buffer=buf;
+    var hp=ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=8000;
+    ns.connect(hp); hp.connect(g); ns.start(t);
+  }
+
+  function _ride(t, vel){
+    var ctx=_ctx(), dur=0.6;
+    var g=ctx.createGain(); g.gain.setValueAtTime(vel*0.5,t); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+    g.connect(ctx.destination);
+    var buf=ctx.createBuffer(1,Math.ceil(ctx.sampleRate*dur),ctx.sampleRate);
+    var d=buf.getChannelData(0); for(var i=0;i<d.length;i++) d[i]=Math.random()*2-1;
+    var ns=ctx.createBufferSource(); ns.buffer=buf;
+    var bp=ctx.createBiquadFilter(); bp.type='bandpass'; bp.frequency.value=6000; bp.Q.value=1.5;
+    ns.connect(bp); bp.connect(g); ns.start(t);
+  }
+
+  function _tom(t, vel, freq){
+    var ctx=_ctx(), g=ctx.createGain();
+    g.gain.setValueAtTime(vel*1.5,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.35);
+    g.connect(ctx.destination);
+    var o=ctx.createOscillator(); o.type='sine';
+    o.frequency.setValueAtTime(freq,t); o.frequency.exponentialRampToValueAtTime(freq*0.35,t+0.25);
+    o.connect(g); o.start(t); o.stop(t+0.36);
+  }
+
+  window._drumHit = function(midiNote, t, vel){
+    var v=Math.max(0.15, Math.min(1.0, vel));
+    if     (midiNote===36||midiNote===35)              _kick(t,v);
+    else if(midiNote===38||midiNote===40||midiNote===37) _snare(t,v);
+    else if(midiNote===42||midiNote===44)              _hihat(t,v,false);
+    else if(midiNote===46)                             _hihat(t,v,true);
+    else if(midiNote===49||midiNote===57||midiNote===55) _hihat(t,v,true);
+    else if(midiNote===51||midiNote===53||midiNote===59) _ride(t,v);
+    else if(midiNote===50)                             _tom(t,v,210);
+    else if(midiNote===47||midiNote===48)              _tom(t,v,155);
+    else if(midiNote===43||midiNote===45)              _tom(t,v,105);
+    else                                               _snare(t,v*0.4);
+  };
+})();
 """
 
 _ROLL_JS = r"""
@@ -1152,7 +1231,6 @@ _ROLL_JS = r"""
     const wrap=document.getElementById('roll-wrap');
     const ph=document.getElementById('ph');
     if(!wrap||!ph) return;
-    const player=document.querySelector('midi-player');
 
     function frame(){
       requestAnimationFrame(frame);
@@ -1165,8 +1243,7 @@ _ROLL_JS = r"""
       }
       const ctx=ph.getContext('2d');
       ctx.clearRect(0,0,ph.width,ph.height);
-      if(!player) return;
-      const t=player.currentTime||0;
+      const t=(typeof Tone!=='undefined'&&Tone.Transport.state==='started')?Tone.Transport.seconds:0;
       if(t<=0) return;
       const xCanvas=tToX(t);           // position in full canvas coords
       const xView=xCanvas-wrap.scrollLeft; // position in viewport
@@ -1210,13 +1287,17 @@ def _make_simple_player(midi_path: str) -> str:
     midi_url     = f"http://127.0.0.1:{PREVIEW_PORT}/{midi_fname}"
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@magenta/music@1.23.1/es6/core.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0"></script>
-<style>{_ROLL_CSS}</style></head><body>
-<midi-player src="{midi_url}" sound-font></midi-player>
+<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
+<script>{_DRUM_SYNTH_JS}</script>
+<style>{_ROLL_CSS}
+  #play-btn{{background:#1a3a80;color:#aaccff;border:1px solid #2244aa;}}
+  #stop-btn{{background:#1a1a2a;color:#778899;border:1px solid #222;}}
+</style></head><body>
 <div id="toolbar">
+  <button class="tb" id="play-btn" onclick="tonePlay()">&#9654; Play</button>
+  <button class="tb" id="stop-btn" onclick="toneStop()">&#9646;&#9646; Stop</button>
+  <span class="tb-sep"></span>
   <button class="tb on" id="draw-btn">Draw</button>
   <button class="tb" id="erase-btn">Erase</button>
   <button class="tb" id="sel-btn">Select</button>
@@ -1238,7 +1319,41 @@ def _make_simple_player(midi_path: str) -> str:
   <div id="vel-wrap"><canvas id="vel-cv"></canvas><span id="vel-label">vel</span></div>
 </div>
 <div id="tracks-legend"></div>
-<script>window.__MIDI_URL__="{midi_url}";{_ROLL_JS}</script>
+<script>
+window.__MIDI_URL__="{midi_url}";
+var _toneSynth=null,_toneParts=[],_midiData=null;
+function _initSynth(){{if(!_toneSynth){{_toneSynth=new Tone.PolySynth(Tone.Synth,{{oscillator:{{type:'triangle'}},envelope:{{attack:0.02,decay:0.1,sustain:0.5,release:0.8}}}}).toDestination();}}}}
+function toneStop(){{Tone.Transport.stop();Tone.Transport.cancel(0);_toneParts.forEach(p=>{{try{{p.dispose();}}catch(e){{}}}});_toneParts=[];}}
+function tonePlay(){{
+  if(!_midiData)return;
+  toneStop();_initSynth();
+  var tempos=_midiData.header.tempos;
+  Tone.Transport.bpm.value=tempos&&tempos.length?tempos[0].bpm:120;
+  _midiData.tracks.forEach(function(track){{
+    var isDrum=(track.instrument&&track.instrument.percussion)||track.name==='drums';
+    var evts=track.notes.map(n=>[n.time,n]);
+    if(!evts.length)return;
+    if(isDrum){{
+      var p=new Tone.Part(function(time,n){{
+        if(window._drumHit) window._drumHit(n.midi, time, n.velocity);
+      }},evts);
+      p.start(0);_toneParts.push(p);
+    }}else{{
+      var p=new Tone.Part(function(time,n){{_toneSynth.triggerAttackRelease(n.name,Math.max(n.duration,0.08),time,n.velocity);}},evts);
+      p.start(0);_toneParts.push(p);
+    }}
+  }});
+  Tone.Transport.start('+0.05');
+}}
+window._rollReload=function(url){{
+  toneStop();_midiData=null;
+  fetch(url).then(r=>r.arrayBuffer()).then(b=>{{_midiData=new Midi(b);}});
+  if(window._rollReloadCb)window._rollReloadCb(url);
+}};
+fetch("{midi_url}").then(r=>r.arrayBuffer()).then(b=>{{_midiData=new Midi(b);}}).catch(()=>{{}});
+window._rollReloadCb=null;
+{_ROLL_JS}
+</script>
 </body></html>""", encoding="utf-8")
     player_url = f"http://127.0.0.1:{PREVIEW_PORT}/{player_fname}"
     return f'<iframe src="{player_url}" style="width:100%;height:420px;border:none;border-radius:8px;" loading="lazy"></iframe>'
@@ -1257,10 +1372,9 @@ def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> s
     player_fname = stem_name + "_player.html"
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@magenta/music@1.23.1/es6/core.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
+<script>{_DRUM_SYNTH_JS}</script>
 <style>{_ROLL_CSS}
   #btns{{display:flex;gap:6px;margin-bottom:6px;}}
   #play-btn{{background:#1a3a80;color:#aaccff;border:1px solid #2244aa;}} #stop-btn{{background:#1a1a2a;color:#778899;border:1px solid #222;}}
@@ -1273,7 +1387,6 @@ def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> s
 </div>
 <audio id="orig" src="{audio_url}" controls style="width:100%;height:28px;margin-bottom:4px;"></audio>
 <div id="timeinfo"></div>
-<midi-player id="midi" src="{midi_url}" sound-font></midi-player>
 <div id="toolbar">
   <button class="tb on" id="draw-btn">Draw</button>
   <button class="tb" id="erase-btn">Erase</button>
@@ -1297,18 +1410,44 @@ def _make_sync_player(midi_path: str, audio_path: str, start_offset: float) -> s
 </div>
 <div id="tracks-legend"></div>
 <script>
-  window.__MIDI_URL__="{midi_url}";
-  const orig=document.getElementById('orig'),midi=document.getElementById('midi');
-  const START={start_offset:.3f};
-  const info=document.getElementById('timeinfo');
-  function fmt(s){{const m=Math.floor(s/60);return m+':'+(Math.floor(s%60)+'').padStart(2,'0');}}
-  orig.addEventListener('timeupdate',()=>{{
-    const t=Math.max(0,orig.currentTime-START);
-    info.textContent='Audio '+fmt(orig.currentTime)+'  ·  Arrangement '+fmt(t);
+window.__MIDI_URL__="{midi_url}";
+var _toneSynth=null,_toneParts=[],_midiData=null;
+function _initSynth(){{if(!_toneSynth){{_toneSynth=new Tone.PolySynth(Tone.Synth,{{oscillator:{{type:'triangle'}},envelope:{{attack:0.02,decay:0.1,sustain:0.5,release:0.8}}}}).toDestination();}}}}
+function toneStop(){{Tone.Transport.stop();Tone.Transport.cancel(0);_toneParts.forEach(p=>{{try{{p.dispose();}}catch(e){{}}}});_toneParts=[];}}
+function tonePlay(){{
+  if(!_midiData)return;
+  toneStop();_initSynth();
+  var tempos=_midiData.header.tempos;
+  Tone.Transport.bpm.value=tempos&&tempos.length?tempos[0].bpm:120;
+  _midiData.tracks.forEach(function(track){{
+    var isDrum=(track.instrument&&track.instrument.percussion)||track.name==='drums';
+    var evts=track.notes.map(n=>[n.time,n]);
+    if(!evts.length)return;
+    if(isDrum){{
+      var p=new Tone.Part(function(time,n){{
+        if(window._drumHit) window._drumHit(n.midi, time, n.velocity);
+      }},evts);
+      p.start(0);_toneParts.push(p);
+    }}else{{
+      var p=new Tone.Part(function(time,n){{_toneSynth.triggerAttackRelease(n.name,Math.max(n.duration,0.08),time,n.velocity);}},evts);
+      p.start(0);_toneParts.push(p);
+    }}
   }});
-  document.getElementById('play-btn').onclick=()=>{{orig.currentTime=START;orig.play();midi.start();}};
-  document.getElementById('stop-btn').onclick=()=>{{orig.pause();midi.stop();}};
-  {_ROLL_JS}
+  Tone.Transport.start('+0.05');
+}}
+fetch("{midi_url}").then(r=>r.arrayBuffer()).then(b=>{{_midiData=new Midi(b);}}).catch(()=>{{}});
+const orig=document.getElementById('orig');
+const START={start_offset:.3f};
+const info=document.getElementById('timeinfo');
+function fmt(s){{const m=Math.floor(s/60);return m+':'+(Math.floor(s%60)+'').padStart(2,'0');}}
+orig.addEventListener('timeupdate',()=>{{
+  const t=Math.max(0,orig.currentTime-START);
+  info.textContent='Audio '+fmt(orig.currentTime)+'  ·  Arrangement '+fmt(t);
+}});
+document.getElementById('play-btn').onclick=()=>{{orig.currentTime=START;orig.play();tonePlay();}};
+document.getElementById('stop-btn').onclick=()=>{{orig.pause();toneStop();}};
+window._rollReload=function(url){{toneStop();_midiData=null;fetch(url).then(r=>r.arrayBuffer()).then(b=>{{_midiData=new Midi(b);}});}};
+{_ROLL_JS}
 </script></body></html>""", encoding="utf-8")
     player_url = f"http://127.0.0.1:{PREVIEW_PORT}/{player_fname}"
     return f'<iframe src="{player_url}" style="width:100%;height:500px;border:none;border-radius:8px;" loading="lazy"></iframe>'
@@ -1330,15 +1469,19 @@ def _make_variation_player(paths: list[str], stem_name: str, num_variations: int
     player_fname = stem_name + "_player.html"
     (OUTPUTS_DIR / player_fname).write_text(f"""<!DOCTYPE html>
 <html><head><meta charset="utf-8">
-<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@magenta/music@1.23.1/es6/core.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/html-midi-player@1.5.0"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tonejs/midi@2.0.27/build/Midi.js"></script>
+<script>{_DRUM_SYNTH_JS}</script>
 <style>{_ROLL_CSS}
   .vtab.on{{background:#1a3a6a;border-color:#4477cc;color:#88bbff;}}
+  #play-btn{{background:#1a3a80;color:#aaccff;border:1px solid #2244aa;}}
+  #stop-btn{{background:#1a1a2a;color:#778899;border:1px solid #222;}}
 </style></head><body>
 <div id="toolbar">
   {tabs_html}
+  <span class="tb-sep"></span>
+  <button class="tb" id="play-btn" onclick="tonePlay()">&#9654; Play</button>
+  <button class="tb" id="stop-btn" onclick="toneStop()">&#9646;&#9646; Stop</button>
   <span class="tb-sep"></span>
   <button class="tb on" id="draw-btn">Draw</button>
   <button class="tb" id="erase-btn">Erase</button>
@@ -1355,7 +1498,6 @@ def _make_variation_player(paths: list[str], stem_name: str, num_variations: int
   <button class="tb" id="dl-btn">Export MIDI</button>
   <span id="hint">Click+drag = draw note  |  Right-click = erase</span>
 </div>
-<midi-player id="mp" sound-font></midi-player>
 <div id="roll-status" style="padding:3px 6px;font-size:9px;color:#557799;background:#090d14;">Loading...</div>
 <div id="roll-area">
   <div id="roll-wrap" class="draw" style="position:relative;"><canvas id="rc"></canvas><canvas id="ph" style="position:absolute;top:0;left:0;pointer-events:none;z-index:3;"></canvas></div>
@@ -1363,16 +1505,43 @@ def _make_variation_player(paths: list[str], stem_name: str, num_variations: int
 </div>
 <div id="tracks-legend"></div>
 <script>
-  const URLS={urls_js};
-  window.__MIDI_URL__=URLS[0];
-  function selectVar(i){{
-    window.__MIDI_URL__=URLS[i];
-    document.getElementById('mp').src=URLS[i];
-    document.querySelectorAll('.vtab').forEach((b,j)=>b.classList.toggle('on',i===j));
-    if(window._rollReload) window._rollReload(URLS[i]);
-  }}
-  selectVar(0);
-  {_ROLL_JS}
+var _toneSynth=null,_toneParts=[],_midiData=null;
+function _initSynth(){{if(!_toneSynth){{_toneSynth=new Tone.PolySynth(Tone.Synth,{{oscillator:{{type:'triangle'}},envelope:{{attack:0.02,decay:0.1,sustain:0.5,release:0.8}}}}).toDestination();}}}}
+function toneStop(){{Tone.Transport.stop();Tone.Transport.cancel(0);_toneParts.forEach(p=>{{try{{p.dispose();}}catch(e){{}}}});_toneParts=[];}}
+function tonePlay(){{
+  if(!_midiData)return;
+  toneStop();_initSynth();
+  var tempos=_midiData.header.tempos;
+  Tone.Transport.bpm.value=tempos&&tempos.length?tempos[0].bpm:120;
+  _midiData.tracks.forEach(function(track){{
+    var isDrum=(track.instrument&&track.instrument.percussion)||track.name==='drums';
+    var evts=track.notes.map(n=>[n.time,n]);
+    if(!evts.length)return;
+    if(isDrum){{
+      var p=new Tone.Part(function(time,n){{
+        if(window._drumHit) window._drumHit(n.midi, time, n.velocity);
+      }},evts);
+      p.start(0);_toneParts.push(p);
+    }}else{{
+      var p=new Tone.Part(function(time,n){{_toneSynth.triggerAttackRelease(n.name,Math.max(n.duration,0.08),time,n.velocity);}},evts);
+      p.start(0);_toneParts.push(p);
+    }}
+  }});
+  Tone.Transport.start('+0.05');
+}}
+const URLS={urls_js};
+window.__MIDI_URL__=URLS[0];
+function _loadMidi(url){{toneStop();_midiData=null;fetch(url).then(r=>r.arrayBuffer()).then(b=>{{_midiData=new Midi(b);}}).catch(()=>{{}});}}
+function selectVar(i){{
+  window.__MIDI_URL__=URLS[i];
+  document.querySelectorAll('.vtab').forEach((b,j)=>b.classList.toggle('on',i===j));
+  if(window._rollReload) window._rollReload(URLS[i]);
+  _loadMidi(URLS[i]);
+}}
+window._rollReload=function(url){{_loadMidi(url);}};
+_loadMidi(URLS[0]);
+selectVar(0);
+{_ROLL_JS}
 </script></body></html>""", encoding="utf-8")
     player_url    = f"http://127.0.0.1:{PREVIEW_PORT}/{player_fname}"
     iframe_height = min(700, 460 + max(0, len(paths) - 1) * 20)
@@ -1438,6 +1607,8 @@ def run_pipeline(
     reverb_mix: float = 0.18,
     pitch_strength: float = 0.8,
     noise_strength: float = 0.7,
+    melody_contour: str = "Arch",
+    motif_input: str = "",
 ):
     ts_info      = TIME_SIGNATURES.get(time_sig, TIME_SIGNATURES["4/4"])
     beats_per_bar = ts_info["beats_per_bar"]
@@ -1539,14 +1710,14 @@ def run_pipeline(
 
         # If every harmony instrument is algo-replaceable, skip the LLM entirely.
         all_algo_harmony = all(
-            inst in CHORDAL_INSTRUMENTS or inst in BASS_INSTRUMENTS
+            inst in CHORDAL_INSTRUMENTS or inst in BASS_INSTRUMENTS or inst == "drums"
             for inst in harmony_instruments
         )
 
         if all_algo_harmony and chord_timeline:
             yield None, None,f"Step 3/4 -- Building harmony (algorithmic)…\n{note_summary}\n{chord_summary}"
             orchestration = {
-                "key": key, "tempo": tempo,
+                "key": key, "tempo": tempo, "preset": preset_name,
                 "parts": {inst: [] for inst in instruments},
             }
             orchestration = inject_algo_parts(
@@ -1615,6 +1786,14 @@ def run_pipeline(
             )
             return
 
+        # Inject drums algorithmically (LLM never generates drum notes)
+        if "drums" in instruments:
+            from src.algo_arranger import make_drum_part, _DRUM_STYLE_MAP
+            drum_style = _DRUM_STYLE_MAP.get(preset_name, "pop")
+            if "parts" not in orchestration:
+                orchestration["parts"] = {}
+            orchestration["parts"]["drums"] = make_drum_part(total_beats, beats_per_bar, drum_style)
+
         yield None, None,"Step 4/4 -- Building MIDI…"
         output_path = str(OUTPUTS_DIR / f"{timestamp}_{safe_preset}_{safe_key}{_korvai_suffix}.mid")
         harmony_midi_path = str(OUTPUTS_DIR / f"{timestamp}_{safe_preset}_{safe_key}{_korvai_suffix}_harmony.mid")
@@ -1668,16 +1847,46 @@ def run_pipeline(
             yield None, None,"Harmony only mode requires a chord progression or K section. Add chords or a korvai form above."; return
 
         yield None, None,f"Building harmony arrangement…\n  {key} · {tempo} BPM\n{chord_summary}"
-        orchestration = {"key": key, "tempo": tempo, "parts": {inst: [] for inst in instruments}}
+        orchestration = {"key": key, "tempo": tempo, "preset": preset_name, "parts": {inst: [] for inst in instruments}}
         orchestration = inject_algo_parts(
             orchestration, chord_timeline, total_beats,
             CHORDAL_INSTRUMENTS, BASS_INSTRUMENTS,
             dict(INSTRUMENT_RANGES), harmony_style, beats_per_bar, key,
             fill_melody_parts=True, section_map=section_map or None,
         )
+
+        # Synfire-style: overlay contour melody or motif on any empty melody parts
+        _mel_insts = [i for i in instruments if i in _MELODY_INSTRUMENTS]
+        if _mel_insts:
+            from src.algo_arranger import make_contour_melody, make_motif_melody
+            lo_m, hi_m = dict(INSTRUMENT_RANGES).get(_mel_insts[0], (55, 88))
+            if motif_input and motif_input.strip():
+                mel_notes = make_motif_melody(
+                    chord_timeline, total_beats, lo_m, hi_m,
+                    motif_str=motif_input.strip(), notes_per_beat=2.0,
+                )
+            elif melody_contour and melody_contour != "None":
+                mel_notes = make_contour_melody(
+                    chord_timeline, total_beats, lo_m, hi_m,
+                    contour=melody_contour, notes_per_beat=2.0,
+                )
+            else:
+                mel_notes = []
+            if mel_notes:
+                orchestration["parts"][_mel_insts[0]] = mel_notes
+
         if humanize_amount > 0:
             orchestration = humanize_orchestration(orchestration, amount=humanize_amount,
                                                    melody_instruments=_MELODY_INSTRUMENTS)
+
+        # Inject drums algorithmically
+        if "drums" in instruments:
+            from src.algo_arranger import make_drum_part, _DRUM_STYLE_MAP
+            drum_style = _DRUM_STYLE_MAP.get(preset_name, "pop")
+            if "parts" not in orchestration:
+                orchestration["parts"] = {}
+            orchestration["parts"]["drums"] = make_drum_part(total_beats, beats_per_bar, drum_style)
+
         safe_key    = re.sub(r"[^\w]+", "_", key).strip("_")
         output_path = str(OUTPUTS_DIR / f"{timestamp}_{safe_preset}_{safe_key}{_korvai_suffix}_harmony.mid")
 
@@ -1722,7 +1931,8 @@ def run_pipeline(
             "orchestration": orchestration, "midi_path": output_path,
             "harmony_style": harmony_style, "beats_per_bar": beats_per_bar,
             "time_sig": time_sig, "total_beats": total_beats,
-            "style": combined_style, "ts_info": ts_info, "section_map": section_map})
+            "style": combined_style, "ts_info": ts_info, "section_map": section_map,
+            "chord_input": chord_input, "beats_per_chord": beats_per_chord})
         yield _make_simple_player(output_path), output_path, (
             f"Harmony-only arrangement ready (no LLM used).\n  {key} · {tempo} BPM\n{chord_summary}"
             f"{_korvai_status_block}{section_note}"
@@ -1808,6 +2018,12 @@ def run_pipeline(
         if humanize_amount > 0:
             orchestration = humanize_orchestration(orchestration, amount=humanize_amount,
                                                    melody_instruments=_MELODY_INSTRUMENTS, seed=var_idx)
+        if "drums" in instruments:
+            from src.algo_arranger import make_drum_part, _DRUM_STYLE_MAP
+            if "parts" not in orchestration:
+                orchestration["parts"] = {}
+            orchestration["parts"]["drums"] = make_drum_part(
+                total_beats, beats_per_bar, _DRUM_STYLE_MAP.get(preset_name, "pop"))
         try:
             suffix      = f"_v{var_idx+1}" if num_variations > 1 else ""
             output_path = str(OUTPUTS_DIR / f"{stem_name}{suffix}.mid")
@@ -1966,7 +2182,7 @@ _TOOLTIP_JS = """
   var _activeOscs  = [];
   var _masterGain  = null, _bassGain = null, _chordGain = null, _drumGain = null;
   var _reverbNode  = null, _reverbSend = null;
-  var _melodyGain  = null, _ghostGain = null;
+  var _melodyGain  = null;
   var _noiseBuffer = null;
 
   function _makeReverb(ctx, decaySec, roomSize) {
@@ -2004,23 +2220,16 @@ _TOOLTIP_JS = """
     _reverbNode.connect(reverbOut); reverbOut.connect(_masterGain);
 
     _melodyGain = _audioCtx.createGain(); _melodyGain.gain.value = 0.0; // off by default
-    // Ghost Orchestra: dedicated bus
-    _ghostGain  = _audioCtx.createGain(); _ghostGain.gain.value  = 0.85;
-    window._ghostGain = _ghostGain;
     _bassGain.connect(_masterGain);
     _chordGain.connect(_masterGain);
     _drumGain.connect(_masterGain);
     _melodyGain.connect(_masterGain);
-    _ghostGain.connect(_masterGain);
     // Send each bus to reverb (bass gets less room -- keeps it tight)
     var bassRevSend = _audioCtx.createGain(); bassRevSend.gain.value = 0.45;
     _bassGain.connect(bassRevSend); bassRevSend.connect(_reverbSend);
     _chordGain.connect(_reverbSend);
     _drumGain.connect(_reverbSend);
     _melodyGain.connect(_reverbSend);
-    // Ghost gets a heavy reverb send -- it should feel distant/orchestral
-    var ghostRevSend = _audioCtx.createGain(); ghostRevSend.gain.value = 1.2;
-    _ghostGain.connect(ghostRevSend); ghostRevSend.connect(_reverbSend);
     _reverbSend.connect(_reverbNode);
 
     _masterGain.connect(_audioCtx.destination);
@@ -4906,7 +5115,7 @@ _TOOLTIP_JS = """
   };
 })();
 
-/* -- Crystallize & Ghost Orchestra -- pure JS, zero server roundtrip -- */
+/* -- Crystallize & Describe -- pure JS, zero server roundtrip -- */
 (function() {
 
   // Map Live Recorder mode names → Composer key string suffix
@@ -4997,158 +5206,6 @@ _TOOLTIP_JS = """
     if (window.ocNav) window.ocNav('composer');
     if (srcBtn) { srcBtn.disabled = false; }
   };
-
-  // -- GHOST ORCHESTRA --------------------------------------------------------
-  // Additive orchestral layer that plays complementary voices UNDERNEATH the band.
-
-  var _ghostActive = false;
-  var _ghostTimer  = null;
-  var _ghostInst   = 'strings_ens';
-
-  // Note name → pitch class
-  var _GPC = {C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11};
-
-  // Self-contained string-pad synthesizer -- uses raw Web Audio, no IIFE-1 dependency
-  function _ghostPlayPad(midi, t, dur, vel, ctx, dest) {
-    var freq = 440 * Math.pow(2, (midi - 69) / 12);
-    var master = ctx.createGain();
-    master.gain.setValueAtTime(0.001, t);
-    master.gain.linearRampToValueAtTime(vel, t + Math.min(0.28, dur * 0.3));
-    master.gain.setValueAtTime(vel,   t + Math.max(t + 0.01, t + dur - 0.20));
-    master.gain.linearRampToValueAtTime(0.001, t + dur);
-    master.connect(dest);
-    [-7, -3, 0, 3, 7].forEach(function(det) {
-      var osc = ctx.createOscillator();
-      osc.type = 'sawtooth';
-      osc.frequency.value = freq;
-      osc.detune.value = det;
-      osc.connect(master);
-      osc.start(Math.max(t, ctx.currentTime));
-      osc.stop(t + dur + 0.15);
-    });
-  }
-
-  function _ghostTick() {
-    if (!_ghostActive) return;
-    var ctx = window._audioCtx;
-    var st  = window._accompState;
-    if (!ctx || !st || !st.chords || !st.chords.length) {
-      _ghostTimer = setTimeout(_ghostTick, 120);
-      return;
-    }
-    var chord = st.chords[st.idx] || st.chords[0];
-    if (!chord || !chord.notes || !chord.notes.length) {
-      _ghostTimer = setTimeout(_ghostTick, 120);
-      return;
-    }
-    var dest   = window._ghostGain || window._masterGain || ctx.destination;
-    var barDur = st.bpb * st.beatDur;
-    var t      = ctx.currentTime + 0.06;
-    var rootPc = _GPC[chord.notes[0]];
-    if (rootPc === undefined) { _ghostTimer = setTimeout(_ghostTick, 120); return; }
-    var fifthPc = (rootPc + 7) % 12;
-    var inst    = _ghostInst;
-
-    if (inst === 'brass') {
-      _ghostPlayPad(24 + rootPc,  t,        Math.min(barDur * 0.55, 1.5), 0.22, ctx, dest);
-      _ghostPlayPad(36 + fifthPc, t + 0.06, Math.min(barDur * 0.45, 1.2), 0.14, ctx, dest);
-    } else if (inst === 'organ' || inst === 'piano2' || inst === 'rhodes') {
-      _ghostPlayPad(36 + rootPc,  t,        barDur * 1.06, 0.16, ctx, dest);
-      _ghostPlayPad(48 + fifthPc, t + 0.05, barDur * 1.06, 0.12, ctx, dest);
-    } else {
-      // strings_ens, vibes, acoustic, default -- cello/viola/violin spread
-      _ghostPlayPad(36 + rootPc,  t,        barDur * 1.06, 0.20, ctx, dest);
-      _ghostPlayPad(48 + fifthPc, t + 0.08, barDur * 1.04, 0.15, ctx, dest);
-      _ghostPlayPad(60 + rootPc,  t + 0.16, barDur * 1.02, 0.10, ctx, dest);
-    }
-
-    // Re-fire just before the current bar ends so notes overlap seamlessly
-    _ghostTimer = setTimeout(_ghostTick, Math.max(80, (barDur - 0.15) * 1000));
-  }
-
-  // Ghost instrument + reverb room chosen per genre
-  var _GHOST_MAP = {
-    // Jazz → organ swell, medium hall
-    'Jazz':          {inst:'organ',       room:'md', rev:0.32, label:'Hammond organ · Medium hall'},
-    'Jazz Shell':    {inst:'organ',       room:'md', rev:0.32, label:'Hammond organ · Medium hall'},
-    'Brushed Trio':  {inst:'organ',       room:'md', rev:0.28, label:'Hammond organ · Studio room'},
-    'Rhodes Jazz':   {inst:'strings_ens', room:'md', rev:0.30, label:'String ensemble · Medium hall'},
-    'Vibraphone':    {inst:'strings_ens', room:'sm', rev:0.22, label:'String ensemble · Small room'},
-    'Swing':         {inst:'organ',       room:'md', rev:0.30, label:'Hammond organ · Medium hall'},
-    'Smooth Jazz':   {inst:'strings_ens', room:'md', rev:0.28, label:'String ensemble · Medium hall'},
-    // Soul / Gospel / Motown → organ pad
-    'Gospel':        {inst:'organ',       room:'lg', rev:0.45, label:'Gospel organ · Large hall'},
-    'Soul':          {inst:'organ',       room:'lg', rev:0.40, label:'Gospel organ · Large hall'},
-    'Motown':        {inst:'organ',       room:'md', rev:0.35, label:'Hammond organ · Medium hall'},
-    'Worship':       {inst:'organ',       room:'lg', rev:0.50, label:'Cathedral organ · Large hall'},
-    'Neo Soul':      {inst:'strings_ens', room:'md', rev:0.35, label:'Strings pad · Medium hall'},
-    'New Soul':      {inst:'strings_ens', room:'md', rev:0.35, label:'Strings pad · Medium hall'},
-    // R&B / Funk → brass stabs
-    'R&B':           {inst:'brass',       room:'md', rev:0.28, label:'Brass section · Medium hall'},
-    'Funk':          {inst:'brass',       room:'sm', rev:0.20, label:'Brass stabs · Small room'},
-    'Funk Chop':     {inst:'brass',       room:'sm', rev:0.18, label:'Brass stabs · Tight room'},
-    'Disco Pop':     {inst:'brass',       room:'md', rev:0.25, label:'Brass section · Medium hall'},
-    // Cinematic / Ballad / Pad → strings
-    'Cinematic':     {inst:'strings_ens', room:'lg', rev:0.50, label:'String ensemble · Large hall'},
-    'Ballad':        {inst:'strings_ens', room:'lg', rev:0.42, label:'String ensemble · Large hall'},
-    'Pad':           {inst:'strings_ens', room:'lg', rev:0.48, label:'String pad · Large hall'},
-    // Pop / Indie → piano2 with plate reverb
-    'Pop':           {inst:'piano2',      room:'pl', rev:0.30, label:'Grand piano · Plate reverb'},
-    'Indie Pop':     {inst:'piano2',      room:'pl', rev:0.28, label:'Grand piano · Plate reverb'},
-    'Singer-Songwriter':{inst:'acoustic', room:'sm', rev:0.22, label:'Acoustic guitar · Small room'},
-    // Country / Acoustic → acoustic guitar
-    'Acoustic':      {inst:'acoustic',    room:'sm', rev:0.20, label:'Acoustic guitar · Small room'},
-    'Country':       {inst:'acoustic',    room:'sm', rev:0.22, label:'Acoustic guitar · Small room'},
-    // Latin / World → vibes
-    'Bossa Nova':    {inst:'vibes',       room:'sm', rev:0.20, label:'Vibraphone · Small room'},
-    'Samba':         {inst:'vibes',       room:'sm', rev:0.18, label:'Vibraphone · Small room'},
-    'Latin':         {inst:'piano2',      room:'md', rev:0.25, label:'Piano · Medium hall'},
-    'Tropical':      {inst:'vibes',       room:'sm', rev:0.20, label:'Vibraphone · Small room'},
-    'Reggae':        {inst:'organ',       room:'sm', rev:0.22, label:'Organ · Small room'},
-    'Lo-Fi':         {inst:'strings_ens', room:'pl', rev:0.38, label:'Strings · Plate reverb'},
-  };
-  var _GHOST_DEFAULT = {inst:'strings_ens', room:'lg', rev:0.40, label:'String ensemble · Large hall'};
-
-  window._ghostOrchestra = function(srcBtn) {
-    var panel    = document.getElementById('ghost-result-panel');
-    var statusEl = document.getElementById('ghost-status');
-    var inner    = document.getElementById('ghost-result-inner');
-
-    if (_ghostActive) {
-      _ghostActive = false;
-      if (_ghostTimer) { clearTimeout(_ghostTimer); _ghostTimer = null; }
-      if (panel) panel.style.display = 'none';
-      if (srcBtn) {
-        srcBtn.querySelector('.bridge-btn-sub').textContent = 'Summon AI orchestra underneath';
-        srcBtn.classList.remove('ghost-active');
-      }
-      return;
-    }
-
-    var styleEl  = document.getElementById('ctrl-style');
-    var curStyle = styleEl ? styleEl.value : 'Ballad';
-    var ghost    = _GHOST_MAP[curStyle] || _GHOST_DEFAULT;
-    _ghostInst   = ghost.inst;
-    _ghostActive = true;
-
-    if (!window._accompRunning && window.startAccompaniment) window.startAccompaniment();
-    _ghostTick();
-
-    if (panel) panel.style.display = 'block';
-    if (inner) inner.innerHTML = '<div style="display:flex;gap:8px;align-items:center;padding:6px 0">'
-      + '<span style="font-size:11px;color:#7ab4ff">' + ghost.label + '</span></div>'
-      + '<div style="font-size:10px;color:#446688;margin-top:2px">Press again to stop</div>';
-    if (statusEl) statusEl.textContent = 'Ghost Orchestra live · ' + curStyle;
-    if (srcBtn) {
-      srcBtn.querySelector('.bridge-btn-sub').textContent = 'Press again to stop';
-      srcBtn.classList.add('ghost-active');
-    }
-  };
-
-  // Expose for CSS animation
-  var styleTag = document.createElement('style');
-  styleTag.textContent = '@keyframes ghost-pulse{0%,100%{opacity:0.3;transform:scale(0.85)}50%{opacity:1;transform:scale(1.15)}} .ghost-btn.ghost-active{background:linear-gradient(135deg,#0d1a30 0%,#162540 100%)!important;border-color:#5599ff!important;}';
-  document.head.appendChild(styleTag);
 
 })();
 
@@ -5459,7 +5516,7 @@ function studioShowTab(tab) {
 
 /* -- Home/section navigation -- */
 (function(){
-  function _show(id){ var el=document.getElementById(id); if(el) el.style.display=''; }
+  function _show(id){ var el=document.getElementById(id); if(el) el.style.removeProperty('display'); }
   function _hide(id){ var el=document.getElementById(id); if(el) el.style.display='none'; }
 
   // Gradio Svelte dispatch -- the only reliable way to set component values
@@ -5551,22 +5608,31 @@ function studioShowTab(tab) {
     _hide('section-composer');
   };
 
-  function _init(){
+  function _hideSections() {
     var live = document.getElementById('section-live');
     var comp = document.getElementById('section-composer');
-    var home = document.getElementById('home-screen');
-    if(live && comp && home){
+    if (live && live.style.display !== 'none') live.style.display = 'none';
+    if (comp && comp.style.display !== 'none') comp.style.display = 'none';
+  }
+
+  // Hide immediately if elements already exist, then watch for late mounts
+  _hideSections();
+  var _sectionObserver = new MutationObserver(function() { _hideSections(); });
+  _sectionObserver.observe(document.body, { childList: true, subtree: true });
+
+  // Stop observing once both sections are found and hidden
+  function _waitSections() {
+    var live = document.getElementById('section-live');
+    var comp = document.getElementById('section-composer');
+    if (live && comp) {
       live.style.display = 'none';
       comp.style.display = 'none';
+      _sectionObserver.disconnect();
     } else {
-      setTimeout(_init, 120);
+      setTimeout(_waitSections, 80);
     }
   }
-  if(document.readyState==='loading'){
-    document.addEventListener('DOMContentLoaded', _init);
-  } else {
-    _init();
-  }
+  _waitSections();
 })();
 """
 
@@ -6493,15 +6559,6 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   border-color: #c89a20; box-shadow: 0 0 14px rgba(200,150,0,0.25);
 }
 
-/* Ghost Orchestra -- electric blue/violet */
-.ghost-btn {
-  background: linear-gradient(135deg, #080e1a 0%, #0d1528 100%);
-  border-color: #1e3a6a; color: #7ab4ff;
-}
-.ghost-btn:hover:not(:disabled) {
-  background: linear-gradient(135deg, #0d1528 0%, #122040 100%);
-  border-color: #4a7fd8; box-shadow: 0 0 14px rgba(80,140,255,0.25);
-}
 
 /* ═══════════════════════════════════════════════
    COMPOSER STUDIO ZONE
@@ -6782,7 +6839,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                 gr.HTML('<button id="hover-audio-btn" onclick="window.toggleHoverAudio&&window.toggleHoverAudio()" '
                         'style="background:transparent;border:1px solid #3a72b8;border-radius:6px;'
                         'color:#7eb8f7;padding:4px 12px;font-size:12px;cursor:pointer;white-space:nowrap">'
-                        '🔊 Palette preview</button>', scale=1)
+                        '🔊 Palette preview</button>')
                 use_flat_prog = gr.Checkbox(
                     label="Use palette selection as flat progression",
                     value=False, scale=1,
@@ -7122,33 +7179,6 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
             <span class="bridge-btn-label">Crystallize</span>
             <span class="bridge-btn-sub">Send session → Composer &amp; generate</span>
           </button>
-          <button id="ghost-orch-btn" class="bridge-btn ghost-btn"
-            onclick="window._ghostOrchestra && window._ghostOrchestra(this)">
-            <span class="bridge-btn-icon">👻</span>
-            <span class="bridge-btn-label">Ghost Orchestra</span>
-            <span class="bridge-btn-sub">Summon AI orchestra underneath</span>
-          </button>
-        </div>
-        <!-- Ghost Orchestra result panel -- hidden until generation completes -->
-        <div id="ghost-result-panel" style="display:none;margin-top:10px;border:1px solid #2a3a5a;border-radius:8px;padding:10px;background:#0a0e1a">
-          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
-            <span style="font-size:11px;font-weight:700;color:#5599ff;letter-spacing:.08em;text-transform:uppercase">Ghost Orchestra</span>
-            <button onclick="document.getElementById('ghost-result-panel').style.display='none'"
-              style="background:none;border:none;color:#555;cursor:pointer;font-size:14px">✕</button>
-          </div>
-          <div id="ghost-result-inner"></div>
-          <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
-            <span style="font-size:10px;color:#446688;min-width:36px">Vol</span>
-            <input type="range" id="ghost-vol-slider" min="0" max="1" step="0.01" value="0.85"
-              style="flex:1;accent-color:#5599ff;cursor:pointer"
-              oninput="
-                var g = window._ghostGain;
-                if (g) g.gain.value = parseFloat(this.value);
-                document.getElementById('ghost-vol-val').textContent = Math.round(this.value*100)+'%';
-              ">
-            <span id="ghost-vol-val" style="font-size:10px;color:#7ab4ff;min-width:32px;text-align:right">85%</span>
-          </div>
-          <div id="ghost-status" style="font-size:10px;font-family:'JetBrains Mono',monospace;color:var(--amber);margin-top:4px"></div>
         </div>
 
         <div class="lc-section-title" style="margin-top:14px">🎧&nbsp; Listen In</div>
@@ -7179,10 +7209,6 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
     with gr.Group(visible=False, elem_id="bridge-hidden"):
         _crystallize_payload = gr.Textbox(value="", interactive=True, visible=False, elem_id="crystallize-payload")
         _crystallize_trigger = gr.Button("crystallize-trigger", visible=False, elem_id="crystallize-trigger")
-        _ghost_payload       = gr.Textbox(value="", interactive=True, visible=False, elem_id="ghost-payload")
-        _ghost_trigger       = gr.Button("ghost-trigger",       visible=False, elem_id="ghost-trigger")
-        # Ghost result panel -- receives the MIDI player HTML
-        ghost_result_out     = gr.HTML(value="", visible=False, elem_id="ghost-result-out")
 
     # -- ORCHESTRAL COMPOSER SECTION -------------------------------------------
     with gr.Group(elem_id="section-composer"):
@@ -7209,6 +7235,18 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
             value="Harmony only", label="Melody source",
             info="Upload/Record: transcribe your voice. AI-generated: Ollama writes the melody. Harmony only: algorithmic, no AI.",
         )
+        with gr.Row(visible=True, elem_id="synfire-row"):
+            melody_contour = gr.Dropdown(
+                ["None", "Arch", "Rise", "Fall", "Valley", "Wave", "Step"],
+                value="Arch", label="Melody contour",
+                info="Synfire-style: shape is defined independently of harmony, then fitted to chord tones.",
+                scale=2,
+            )
+            motif_input = gr.Textbox(
+                value="", label="Motif (overrides contour if set)",
+                placeholder="C4 E4 G4 E4   — space-separated notes, repeats across chords",
+                lines=1, scale=3,
+            )
         audio_input = gr.Audio(
             label="Melody audio (microphone or file)",
             sources=["microphone", "upload"], type="filepath", visible=False,
@@ -7460,6 +7498,25 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
                 reharm_passing       = gr.Checkbox(label="Passing chords",         value=False)
             reharm_btn = gr.Button("Re-arrange", variant="secondary", size="sm")
     
+            gr.Markdown("---\n**Swap chord progression (reharmonise)**")
+            gr.Markdown("_Keeps the last melody contour, replaces the chords underneath, rebuilds harmony/bass._")
+            reharm_new_chords = gr.Textbox(
+                value="", label="New chord progression",
+                placeholder="e.g.  Fmaj7  Dm7  Gm7  C7  -- leave blank to keep current",
+                lines=1,
+            )
+            reharm_chords_btn = gr.Button("Reharmonise", variant="secondary", size="sm")
+
+            gr.Markdown("---\n**Section variation**")
+            gr.Markdown("_Applies a Synfire-style transformation to the melody of the last generation._")
+            with gr.Row():
+                vary_technique = gr.Dropdown(
+                    ["invert", "retrograde", "augment", "diminish"],
+                    value="invert", label="Technique", scale=2,
+                )
+                vary_btn = gr.Button("Create Variation", variant="secondary", size="sm", scale=1)
+            vary_out = gr.Textbox(label="Variation status", lines=2, interactive=False)
+
             gr.Markdown("---\n**Feedback**")
             feedback_input = gr.Textbox(
                 value="", label="What's wrong?",
@@ -7684,6 +7741,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         use_auto_seventh, use_back_cycle, use_passing_chords,
         korvai_table,
         reverb_preset, reverb_mix, pitch_strength, noise_strength,
+        melody_contour, motif_input,
     ]
     _btn_running  = lambda: (gr.update(visible=False), gr.update(visible=True))
     _btn_restored = lambda: (gr.update(visible=True),  gr.update(visible=False))
@@ -7715,6 +7773,77 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         outputs=[out_player, out_file, out_status],
     )
 
+    # Reharmonise with new chord progression
+    def run_reharm_chords(new_chords_str, harmony_sty, key_str, time_sig_str, humanize_amt):
+        from src.algo_arranger import inject_algo_parts
+        ctx = _last_context
+        if not ctx.get("orchestration"):
+            return gr.update(), gr.update(), "No previous generation to reharmonise."
+        import re as _re
+        from datetime import datetime as _dt
+        chords_str = (new_chords_str or "").strip() or ctx.get("chord_input", "")
+        if not chords_str:
+            return gr.update(), gr.update(), "No chord progression supplied."
+        new_ct, total_b, _, chord_sum, sec_map = _build_chord_timeline(
+            chords_str, ctx.get("beats_per_chord", 4.0),
+            ctx.get("total_beats", 32), ctx.get("beats_per_bar", 4.0),
+            key_str, False, False, "", None,
+        )
+        if not new_ct:
+            return gr.update(), gr.update(), "Could not parse new chord progression."
+        ts = TIME_SIGNATURES.get(time_sig_str, TIME_SIGNATURES["4/4"])
+        bpb = ts["beats_per_bar"]
+        orch = dict(ctx["orchestration"])
+        orch = inject_algo_parts(
+            orch, new_ct, total_b,
+            CHORDAL_INSTRUMENTS, BASS_INSTRUMENTS,
+            dict(INSTRUMENT_RANGES), harmony_sty, bpb, key_str,
+        )
+        if humanize_amt > 0:
+            orch = humanize_orchestration(orch, amount=humanize_amt, melody_instruments=_MELODY_INSTRUMENTS)
+        ts_inf = ts
+        stamp = _dt.now().strftime("%Y-%m-%d_%H-%M-%S")
+        out_path = str(OUTPUTS_DIR / f"{stamp}_reharm.mid")
+        try:
+            build_midi(orch, out_path,
+                       time_sig_num=ts_inf["numerator"], time_sig_den=ts_inf["denominator"],
+                       chord_timeline=new_ct, key=key_str)
+            player_html = _make_simple_player(out_path)
+            _last_context.update({"orchestration": orch, "midi_path": out_path,
+                                   "chord_timeline": new_ct, "total_beats": total_b})
+            return player_html, out_path, f"Reharmonised.\nNew chords: {chord_sum}"
+        except Exception as e:
+            return gr.update(), gr.update(), f"Reharmonise failed: {e}"
+
+    reharm_chords_btn.click(
+        run_reharm_chords,
+        inputs=[reharm_new_chords, harmony_style, manual_key, time_sig, humanize],
+        outputs=[out_player, out_file, out_status],
+    )
+
+    # Section variation
+    def run_vary(technique):
+        from src.algo_arranger import vary_orchestration
+        from datetime import datetime as _dt
+        ctx = _last_context
+        if not ctx.get("orchestration"):
+            return "No previous generation to vary."
+        varied = vary_orchestration(ctx["orchestration"], technique=technique)
+        stamp = _dt.now().strftime("%Y-%m-%d_%H-%M-%S")
+        out_path = str(OUTPUTS_DIR / f"{stamp}_variation_{technique}.mid")
+        ts_inf = TIME_SIGNATURES.get(ctx.get("time_sig", "4/4"), TIME_SIGNATURES["4/4"])
+        try:
+            build_midi(varied, out_path,
+                       time_sig_num=ts_inf["numerator"], time_sig_den=ts_inf["denominator"],
+                       chord_timeline=ctx.get("chord_timeline"), key=ctx.get("key", "C major"))
+            _last_context["orchestration"] = varied
+            _last_context["midi_path"] = out_path
+            return f"Variation ({technique}) saved → {out_path}"
+        except Exception as e:
+            return f"Variation failed: {e}"
+
+    vary_btn.click(run_vary, inputs=[vary_technique], outputs=[vary_out])
+
     # Startup check -- feeds the hidden markdown (for wiring) + status box
     def _startup_check():
         ok, msg = check_ollama()
@@ -7738,4 +7867,4 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
 
 if __name__ == "__main__":
     demo.queue()
-    demo.launch(server_port=SERVER_PORT, show_error=True, theme=gr.themes.Base())
+    demo.launch(server_port=SERVER_PORT, show_error=True, server_name="127.0.0.1")

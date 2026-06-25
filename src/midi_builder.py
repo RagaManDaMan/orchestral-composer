@@ -130,19 +130,24 @@ def build_midi(orchestration: dict, output_path: str,
     for part_name, note_list in parts.items():
         if part_name in skip:
             continue
-        # MIDI has 16 channels; channel 9 is reserved for drums — skip it
-        channel = channel_idx if channel_idx < 9 else channel_idx + 1
-        if channel > 15:
-            break   # hard MIDI limit
-        channel_idx += 1
+
+        # Drums always land on channel 9 (GM standard)
+        if part_name == "drums":
+            channel = 9
+        else:
+            channel = channel_idx if channel_idx < 9 else channel_idx + 1
+            if channel > 15:
+                break
+            channel_idx += 1
 
         track = MidiTrack()
         mid.tracks.append(track)
 
         track.append(MetaMessage("track_name", name=part_name, time=0))
 
-        program = INSTRUMENT_PROGRAMS.get(part_name, 40)   # default: Violin
-        track.append(Message("program_change", channel=channel, program=program, time=0))
+        if part_name != "drums":
+            program = INSTRUMENT_PROGRAMS.get(part_name, 40)   # default: Violin
+            track.append(Message("program_change", channel=channel, program=program, time=0))
 
         notes = _quantize_note_list(note_list) if quantize else note_list
 

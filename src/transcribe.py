@@ -14,12 +14,20 @@ Two backends are available:
 import os
 import sys
 import numpy as np
-import librosa
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from config import SAMPLE_RATE, GRID_SIZE_BEATS, MIN_NOTE_DURATION_SEC
 from src.vocal_processor import process_vocal
+
+# Deferred — librosa triggers scipy DLL load; only import when actually transcribing
+librosa = None
+
+def _ensure_librosa():
+    global librosa
+    if librosa is None:
+        import librosa as _l
+        librosa = _l
 
 _CREPE_SR        = 16000   # torchcrepe requires 16 kHz input
 _CREPE_HOP       = 160     # 10 ms per frame at 16 kHz
@@ -63,6 +71,7 @@ def transcribe_audio(
     Returns:
         List of dicts: [{"midi_note": int, "start_sec": float, "duration_sec": float}, ...]
     """
+    _ensure_librosa()
     # Run the full vocal enhancement pipeline before transcription:
     # noise gate → noise reduction → EQ → compression →
     # tuning fix → pitch correction → reverb → normalise
@@ -87,6 +96,7 @@ def transcribe_audio(
 
 def _transcribe_pyin(audio_path: str, sr: Optional[int] = None) -> list[dict]:
     """pyin pitch tracker (librosa). Fast; struggles with ornamental singing."""
+    _ensure_librosa()
     target_sr = sr or SAMPLE_RATE
     y, _ = librosa.load(audio_path, sr=target_sr, mono=True)
     hop_length = 512  # ~23 ms at 22050 Hz
@@ -225,6 +235,7 @@ def detect_tempo(audio_path: str, sr: Optional[int] = None) -> float:
     Estimate tempo from an audio file using librosa's beat tracker.
     Returns BPM as a float. Falls back to DEFAULT_TEMPO_BPM if detection fails.
     """
+    _ensure_librosa()
     from config import DEFAULT_TEMPO_BPM
     try:
         target_sr = sr or SAMPLE_RATE

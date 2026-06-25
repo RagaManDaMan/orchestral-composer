@@ -11,13 +11,14 @@ from src.harmony import chord_tone_names, note_name_to_midi, scale_note_names, p
 # Instruments that express harmony as simultaneous chord voicings.
 # The LLM must output 3–4 note objects with the SAME start_beat for these.
 CHORDAL_INSTRUMENTS: frozenset[str] = frozenset({
-    "piano_harmony", "electric_guitar",
+    "piano_harmony", "electric_guitar", "overdriven_guitar", "nylon_guitar",
     "strings_harmony", "woodwind_harmony",
+    "electric_piano", "synth_pad", "dx7_epiano", "harmonium",
 })
 
 # Instruments that play single-note bass lines.
 BASS_INSTRUMENTS: frozenset[str] = frozenset({
-    "bass", "acoustic_bass", "cello",
+    "bass", "acoustic_bass", "cello", "electric_bass", "slap_bass",
 })
 
 # General MIDI program numbers for each named instrument role.
