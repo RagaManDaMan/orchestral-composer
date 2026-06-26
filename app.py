@@ -4715,7 +4715,7 @@ _TOOLTIP_JS = """
   window._chordNotesFromSym = _chordNotesFromSym;
 
   function _readAccompChords() {
-    // First check JS palette state (_seqOrder / _selectedChords) -- these are authoritative
+    // 1. Explicit user selection (clicked tiles in sequence order)
     if (window._seqOrder && window._seqOrder.length > 0) {
       return window._seqOrder.map(function(sym){
         return {symbol:sym, label:sym, notes:_chordNotesFromSym(sym)};
@@ -4729,7 +4729,13 @@ _TOOLTIP_JS = """
         });
       }
     }
-    // Fallback: read from hidden Gradio CheckboxGroup
+    // 2. JS-built tile grid — always reflects the current root/mode/custom intervals.
+    //    Must come before the Gradio CheckboxGroup, which is only updated on explicit
+    //    backend generate calls and will be stale whenever the user changes root/mode in JS.
+    if (window._currentPaletteTiles && window._currentPaletteTiles.length) {
+      return window._currentPaletteTiles;
+    }
+    // 3. Last resort: hidden Gradio CheckboxGroup (may be stale)
     var data = getChordData();
     var result = [];
     document.querySelectorAll('#chord_picker label').forEach(function(label) {
@@ -4743,10 +4749,6 @@ _TOOLTIP_JS = """
     var checked = result.filter(function(c){return c.checked;});
     if (checked.length > 0) return checked.map(function(c){ return {symbol:c.symbol, label:c.label, notes:c.notes}; });
     if (result.length > 0) return result.map(function(c){ return {symbol:c.symbol, label:c.label, notes:c.notes}; });
-    // Final fallback: use all tiles from the current JS-built palette
-    if (window._currentPaletteTiles && window._currentPaletteTiles.length) {
-      return window._currentPaletteTiles;
-    }
   }
 
   // -- Tap Tempo -----------------------------------------------------------
