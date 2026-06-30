@@ -782,6 +782,425 @@ _DRUM_SYNTH_JS = r"""
 })();
 """
 
+_GARCIA_JS = r"""
+/* ═══════════════════════════════════════════════════════════════════════
+   GarSIa — Gesture Live Looper
+   ═══════════════════════════════════════════════════════════════════════ */
+(function(){
+
+/* ── State ── */
+var _video, _canvas, _ctx;
+var _hands, _camera;
+var _running = false;
+
+var _bpmHistory = [];
+var _currentBPM = 120;
+var _lastTapTime = 0;
+var _lastWristY = null;
+var _tapCooldown = 0;
+var _tapFlash = 0;
+
+var _currentGesture = null;
+var _prevGestureName = null;
+var _gestureHoldFrames = 0;
+var HOLD_FRAMES = 18;  /* ~600 ms at 30 fps */
+var _holdProgress = 0;
+
+var _layers = {drums:false, bass:false, keys:false, lead:false, pad:false};
+
+/* Audio objects */
+var _audioReady = false;
+var _bassSynth = null;
+var _keysSynth = null;
+var _padSynth  = null;
+var _drumLoop  = null;
+var _bassLoop  = null;
+var _keysLoop  = null;
+var _padLoop   = null;
+
+/* Chord preset */
+var _currentChords = ['Cmaj7','Am7','Dm7','G7'];
+var _chordIdx = 0;
+
+/* ── BPM snap ── */
+var _BPMS = [60,65,70,72,75,80,85,90,95,100,105,110,115,120,125,130,140,150,160,170,180];
+function _snapBPM(raw) {
+  return _BPMS.reduce(function(a,b){ return Math.abs(b-raw)<Math.abs(a-raw)?b:a; });
+}
+
+/* ── Finger states ── */
+function _fingers(lm, isRight) {
+  var thumb = isRight ? (lm[4].x < lm[3].x) : (lm[4].x > lm[3].x);
+  return {
+    t: thumb,
+    i: lm[8].y  < lm[6].y,
+    m: lm[12].y < lm[10].y,
+    r: lm[16].y < lm[14].y,
+    p: lm[20].y < lm[18].y
+  };
+}
+
+/* ── Gesture table ── */
+var _G = [
+  {t:0,i:0,m:0,r:0,p:0, name:'Fist',      layer:'drums',      color:'#ff5555', icon:'✊'},
+  {t:0,i:1,m:0,r:0,p:0, name:'Point',     layer:'bass',       color:'#ff9933', icon:'☝'},
+  {t:0,i:1,m:1,r:0,p:0, name:'Peace',     layer:'keys',       color:'#ffee44', icon:'✌'},
+  {t:0,i:1,m:1,r:1,p:0, name:'Three',     layer:'lead',       color:'#44ff88', icon:'🖖'},
+  {t:0,i:1,m:1,r:1,p:1, name:'Four',      layer:'pad',        color:'#44aaff', icon:'🖐'},
+  {t:1,i:1,m:1,r:1,p:1, name:'Open Palm', layer:'all',        color:'#ffffff', icon:'🖐'},
+  {t:1,i:0,m:0,r:0,p:0, name:'Thumb Up',  layer:'bpm_up',     color:'#aaffaa', icon:'👍'},
+  {t:1,i:0,m:0,r:0,p:1, name:'Shaka',     layer:'bpm_down',   color:'#ffaaaa', icon:'🤙'},
+  {t:0,i:0,m:0,r:0,p:1, name:'Pinky',     layer:'chord_next', color:'#cc88ff', icon:'🤙'},
+];
+
+function _classify(lm, isRight) {
+  var f = _fingers(lm, isRight);
+  for (var i=0; i<_G.length; i++) {
+    var g = _G[i];
+    if ((g.t?1:0)===(f.t?1:0) && (g.i?1:0)===(f.i?1:0) &&
+        (g.m?1:0)===(f.m?1:0) && (g.r?1:0)===(f.r?1:0) && (g.p?1:0)===(f.p?1:0))
+      return g;
+  }
+  return {name:'--', layer:null, color:'#555', icon:'?'};
+}
+
+/* ── Wrist tap → BPM ── */
+function _detectTap(wristY, ts) {
+  if (_lastWristY === null) { _lastWristY = wristY; return; }
+  var dy = (wristY - _lastWristY) * 10;
+  _lastWristY = wristY;
+  if (dy > 0.14 && _tapCooldown <= 0) {
+    var interval = (ts - _lastTapTime) / 1000;
+    if (_lastTapTime > 0 && interval > 0.2 && interval < 2.5) {
+      _bpmHistory.push(60 / interval);
+      if (_bpmHistory.length > 8) _bpmHistory.shift();
+      if (_bpmHistory.length >= 2) {
+        var sorted = _bpmHistory.slice().sort(function(a,b){return a-b;});
+        var median = sorted[Math.floor(sorted.length/2)];
+        var snapped = _snapBPM(Math.round(median));
+        if (snapped !== _currentBPM) {
+          _currentBPM = snapped;
+          if (window.Tone) Tone.Transport.bpm.rampTo(_currentBPM, 0.1);
+          var el = document.getElementById('garcia-bpm-val');
+          if (el) el.textContent = _currentBPM;
+        }
+      }
+    }
+    _lastTapTime = ts;
+    _tapCooldown = 12;
+    _tapFlash = 8;
+  }
+  if (_tapCooldown > 0) _tapCooldown--;
+  if (_tapFlash > 0)    _tapFlash--;
+}
+
+/* ── Actions ── */
+function _trigger(layer) {
+  if (!layer) return;
+  if (layer === 'all') {
+    var anyOn = Object.keys(_layers).some(function(k){return _layers[k];});
+    Object.keys(_layers).forEach(function(k){ _layers[k]=!anyOn; });
+  } else if (layer === 'bpm_up') {
+    var idx = _BPMS.indexOf(_currentBPM);
+    if (idx < _BPMS.length-1) {
+      _currentBPM = _BPMS[idx+1];
+      if (window.Tone) Tone.Transport.bpm.rampTo(_currentBPM, 0.2);
+      var el = document.getElementById('garcia-bpm-val'); if(el) el.textContent=_currentBPM;
+    }
+  } else if (layer === 'bpm_down') {
+    var idx = _BPMS.indexOf(_currentBPM);
+    if (idx > 0) {
+      _currentBPM = _BPMS[idx-1];
+      if (window.Tone) Tone.Transport.bpm.rampTo(_currentBPM, 0.2);
+      var el = document.getElementById('garcia-bpm-val'); if(el) el.textContent=_currentBPM;
+    }
+  } else if (layer === 'chord_next') {
+    _chordIdx = (_chordIdx+1) % _currentChords.length;
+    var el = document.getElementById('garcia-chord-now'); if(el) el.textContent=_currentChords[_chordIdx]||'--';
+  } else if (_layers.hasOwnProperty(layer)) {
+    _layers[layer] = !_layers[layer];
+  }
+  _refreshLayers();
+}
+
+function _refreshLayers() {
+  Object.keys(_layers).forEach(function(k) {
+    var el = document.getElementById('garcia-layer-'+k);
+    if (el) el.classList.toggle('active', _layers[k]);
+  });
+}
+
+/* ── Chord → MIDI notes ── */
+var _ROOT_PC = {C:0,'C#':1,Db:1,D:2,'D#':3,Eb:3,E:4,F:5,'F#':6,Gb:6,G:7,'G#':8,Ab:8,A:9,'A#':10,Bb:10,B:11};
+var _NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+function _chordNotes(sym, octave) {
+  var rm = sym.match(/^([A-G][#b]?)/); if (!rm) return ['C'+octave];
+  var root = rm[1]; var rpc = _ROOT_PC[root]||0;
+  var qual = sym.slice(root.length);
+  var ivs = qual.indexOf('maj7')>=0?[0,4,7,11]:qual==='m7'?[0,3,7,10]:qual==='7'?[0,4,7,10]:qual==='m'?[0,3,7]:qual==='dim7'?[0,3,6,9]:[0,4,7];
+  var base = 12*(octave+1);
+  return ivs.map(function(iv){ var m=base+rpc+iv; return _NOTE_NAMES[m%12]+Math.floor(m/12-1); });
+}
+
+/* ── Audio init ── */
+function _initAudio() {
+  if (_audioReady || !window.Tone) return;
+  _audioReady = true;
+  Tone.start();
+  Tone.Transport.bpm.value = _currentBPM;
+
+  _bassSynth = new Tone.MonoSynth({oscillator:{type:'sawtooth'},
+    envelope:{attack:0.02,decay:0.1,sustain:0.3,release:0.4},
+    filter:{frequency:500,type:'lowpass'}}).toDestination();
+  _bassSynth.volume.value = -4;
+
+  _keysSynth = new Tone.PolySynth(Tone.Synth,{oscillator:{type:'triangle'},
+    envelope:{attack:0.02,decay:0.3,sustain:0.4,release:0.8}}).toDestination();
+  _keysSynth.volume.value = -10;
+
+  _padSynth = new Tone.PolySynth(Tone.Synth,{oscillator:{type:'sine'},
+    envelope:{attack:1.0,decay:0.2,sustain:0.9,release:2.5}}).toDestination();
+  _padSynth.volume.value = -14;
+
+  /* Drum loop — 1-bar 4/4 pattern */
+  var _dp = [
+    {time:'0:0:0',note:36,v:0.9},{time:'0:1:0',note:38,v:0.82},
+    {time:'0:2:0',note:36,v:0.85},{time:'0:2:2',note:36,v:0.6},
+    {time:'0:3:0',note:38,v:0.82},
+    {time:'0:0:0',note:42,v:0.5},{time:'0:0:2',note:42,v:0.32},
+    {time:'0:1:0',note:42,v:0.48},{time:'0:1:2',note:42,v:0.30},
+    {time:'0:2:0',note:42,v:0.48},{time:'0:2:2',note:42,v:0.28},
+    {time:'0:3:0',note:42,v:0.48},{time:'0:3:2',note:42,v:0.28},
+  ];
+  _drumLoop = new Tone.Part(function(time,ev){
+    if (_layers.drums && window._drumHit) _drumHit(ev.note,time,ev.v);
+  }, _dp);
+  _drumLoop.loop=true; _drumLoop.loopEnd='1m'; _drumLoop.start(0);
+
+  _bassLoop = new Tone.Sequence(function(time,beat){
+    if (!_layers.bass||!_bassSynth) return;
+    var sym=_currentChords[_chordIdx]||'C';
+    var rm=sym.match(/^([A-G][#b]?)/);
+    if(rm) _bassSynth.triggerAttackRelease(rm[1]+'2','8n',time,0.7);
+  },[0,null,2,null],'4n');
+  _bassLoop.start(0);
+
+  _keysLoop = new Tone.Loop(function(time){
+    if (!_layers.keys||!_keysSynth) return;
+    _keysSynth.triggerAttackRelease(_chordNotes(_currentChords[_chordIdx]||'C',4),'2n',time,0.45);
+  },'1m');
+  _keysLoop.start(0);
+
+  _padLoop = new Tone.Loop(function(time){
+    if (!_layers.pad||!_padSynth) return;
+    _padSynth.triggerAttackRelease(_chordNotes(_currentChords[_chordIdx]||'C',3),'2m',time,0.3);
+  },'2m');
+  _padLoop.start(0);
+
+  Tone.Transport.start();
+}
+
+/* ── Canvas drawing ── */
+var _CONN = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],
+  [13,17],[17,18],[18,19],[19,20],
+  [0,17],[5,9],[9,13]
+];
+
+function _drawSkeleton(lm, color, W, H) {
+  _ctx.save();
+  _ctx.scale(-1,1); _ctx.translate(-W,0);
+  _ctx.strokeStyle=color; _ctx.lineWidth=2.5;
+  _ctx.shadowColor=color; _ctx.shadowBlur=8;
+  _CONN.forEach(function(c){
+    var a=lm[c[0]],b=lm[c[1]];
+    _ctx.beginPath(); _ctx.moveTo(a.x*W,a.y*H); _ctx.lineTo(b.x*W,b.y*H); _ctx.stroke();
+  });
+  _ctx.shadowBlur=3;
+  lm.forEach(function(pt,i){
+    var r=[0,4,8,12,16,20].indexOf(i)>=0?6:3;
+    _ctx.beginPath(); _ctx.arc(pt.x*W,pt.y*H,r,0,Math.PI*2);
+    _ctx.fillStyle=color; _ctx.fill();
+  });
+  _ctx.restore();
+}
+
+function _drawHUD(gesture, W, H) {
+  /* BPM — top left, flashes white on tap */
+  var bpmCol = _tapFlash>0 ? '#ffffff' : '#33cc66';
+  _ctx.font='bold 40px monospace';
+  _ctx.fillStyle=bpmCol; _ctx.shadowColor=bpmCol; _ctx.shadowBlur=_tapFlash>0?22:8;
+  _ctx.fillText('♪ '+_currentBPM+' BPM', 20, 52);
+
+  /* Chord — below BPM */
+  _ctx.font='bold 26px monospace';
+  _ctx.fillStyle='#88ccff'; _ctx.shadowColor='#4488ff'; _ctx.shadowBlur=6;
+  _ctx.fillText(_currentChords[_chordIdx]||'--', 20, 88);
+  _ctx.shadowBlur=0;
+
+  /* Hold-progress ring — centre screen */
+  if (_holdProgress>0 && gesture && gesture.name!=='--') {
+    _ctx.beginPath();
+    _ctx.arc(W/2,H/2,54,-Math.PI/2,-Math.PI/2+_holdProgress*Math.PI*2);
+    _ctx.strokeStyle=gesture.color; _ctx.lineWidth=5;
+    _ctx.shadowColor=gesture.color; _ctx.shadowBlur=14; _ctx.stroke();
+    _ctx.shadowBlur=0;
+  }
+
+  /* Gesture label — bottom left */
+  if (gesture && gesture.name!=='--') {
+    _ctx.font='bold 30px monospace';
+    _ctx.fillStyle=gesture.color; _ctx.shadowColor=gesture.color; _ctx.shadowBlur=10;
+    _ctx.fillText(gesture.icon+'  '+gesture.name, 20, H-56);
+    _ctx.shadowBlur=0;
+    _ctx.font='12px monospace'; _ctx.fillStyle='#4a8a5a';
+    if (gesture.layer) _ctx.fillText('→ '+gesture.layer.toUpperCase().replace('_',' '), 20, H-34);
+  }
+
+  /* Beat dots — bottom right */
+  if (window.Tone && Tone.Transport) {
+    try {
+      var beat = parseInt(Tone.Transport.position.split(':')[1])||0;
+      for (var i=0;i<4;i++) {
+        var active=(i===beat%4);
+        _ctx.beginPath(); _ctx.arc(W-112+i*28, H-22, active?8:5, 0, Math.PI*2);
+        _ctx.fillStyle=active?'#33cc66':'#1a4a2a'; _ctx.fill();
+      }
+    } catch(e){}
+  }
+}
+
+function _onResults(results, ts) {
+  var W=_canvas.width, H=_canvas.height;
+  _ctx.clearRect(0,0,W,H);
+
+  /* Mirrored camera feed */
+  _ctx.save(); _ctx.scale(-1,1); _ctx.translate(-W,0);
+  _ctx.drawImage(results.image,0,0,W,H); _ctx.restore();
+
+  /* Vignette */
+  var vg=_ctx.createRadialGradient(W/2,H/2,H*0.28,W/2,H/2,H*0.88);
+  vg.addColorStop(0,'rgba(0,0,0,0.08)'); vg.addColorStop(1,'rgba(0,0,0,0.62)');
+  _ctx.fillStyle=vg; _ctx.fillRect(0,0,W,H);
+
+  var gesture=null;
+  if (results.multiHandLandmarks&&results.multiHandLandmarks.length) {
+    for (var h=0;h<results.multiHandLandmarks.length;h++) {
+      var lm=results.multiHandLandmarks[h];
+      var isRight=results.multiHandedness&&results.multiHandedness[h]&&
+                  results.multiHandedness[h].label==='Right';
+      var g=_classify(lm,isRight);
+      if(h===0){ gesture=g; _detectTap(lm[0].y,ts); }
+      _drawSkeleton(lm,g.color,W,H);
+    }
+  } else {
+    _lastWristY=null;
+  }
+
+  /* Hold gesture logic */
+  if (gesture&&gesture.name!=='--') {
+    if (gesture.name===_prevGestureName) _gestureHoldFrames++;
+    else _gestureHoldFrames=0;
+    if (_gestureHoldFrames===HOLD_FRAMES) { _trigger(gesture.layer); _gestureHoldFrames=0; }
+    _holdProgress=Math.min(1,_gestureHoldFrames/HOLD_FRAMES);
+  } else {
+    _gestureHoldFrames=0; _holdProgress=0;
+  }
+  _prevGestureName=gesture?gesture.name:null;
+  _currentGesture=gesture;
+
+  _drawHUD(gesture,W,H);
+}
+
+/* ── Dynamic script loader ── */
+function _loadScript(src,cb) {
+  var s=document.createElement('script'); s.src=src; s.onload=cb;
+  document.head.appendChild(s);
+}
+
+/* ── Public API ── */
+window.garciaStart = function() {
+  if (_running) return;
+  var btn=document.getElementById('garcia-start-btn');
+  var status=document.getElementById('garcia-status');
+  if(btn){btn.textContent='Starting…';btn.disabled=true;}
+  if(status) status.textContent='Loading hand tracking…';
+
+  _video=document.getElementById('garcia-video');
+  _canvas=document.getElementById('garcia-canvas');
+  if(!_video||!_canvas){console.error('GarSIa: DOM elements not found');return;}
+  _ctx=_canvas.getContext('2d');
+
+  function _resize(){
+    var vp=document.getElementById('garcia-viewport');
+    if(!vp)return;
+    _canvas.width=vp.offsetWidth; _canvas.height=vp.offsetHeight;
+  }
+  _resize(); window.addEventListener('resize',_resize);
+
+  function _boot() {
+    _hands=new Hands({locateFile:function(f){
+      return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/'+f;
+    }});
+    _hands.setOptions({maxNumHands:2,modelComplexity:1,
+      minDetectionConfidence:0.75,minTrackingConfidence:0.6});
+    _hands.onResults(function(r){_onResults(r,performance.now());});
+    _camera=new Camera(_video,{
+      onFrame:async function(){await _hands.send({image:_video});},
+      width:1280,height:720
+    });
+    _camera.start().then(function(){
+      _running=true;
+      if(btn){btn.style.display='none';}
+      var ov=document.getElementById('garcia-start-overlay'); if(ov) ov.style.display='none';
+      if(status) status.textContent='Camera active · hold gesture 0.6s to toggle layer';
+      _initAudio();
+    }).catch(function(e){
+      if(status) status.textContent='Camera error: '+e.message;
+      if(btn){btn.textContent='► Start Camera';btn.disabled=false;}
+    });
+  }
+
+  if(typeof Hands==='undefined') {
+    _loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js',function(){
+      _loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js',function(){ _boot(); });
+    });
+  } else { _boot(); }
+};
+
+window.garciaStop = function() {
+  _running=false;
+  if(_camera){try{_camera.stop();}catch(e){}}
+  if(window.Tone&&Tone.Transport) Tone.Transport.stop();
+  Object.keys(_layers).forEach(function(k){_layers[k]=false;});
+  _refreshLayers();
+  var btn=document.getElementById('garcia-start-btn');
+  var ov=document.getElementById('garcia-start-overlay');
+  if(btn){btn.textContent='► Start Camera';btn.disabled=false;btn.style.display='';}
+  if(ov) ov.style.display='';
+  var status=document.getElementById('garcia-status');
+  if(status) status.textContent='Stopped';
+};
+
+window.garciaBPMSet = function(val) {
+  var v=parseInt(val); if(isNaN(v)||v<40||v>200) return;
+  _currentBPM=_snapBPM(v); _bpmHistory=[];
+  if(window.Tone) Tone.Transport.bpm.value=_currentBPM;
+  var el=document.getElementById('garcia-bpm-val'); if(el) el.textContent=_currentBPM;
+};
+
+window.garciaChordSet = function(val) {
+  var ch=val.split(',').map(function(s){return s.trim();}).filter(Boolean);
+  if(ch.length){_currentChords=ch;_chordIdx=0;
+    var el=document.getElementById('garcia-chord-now'); if(el) el.textContent=ch[0];}
+};
+
+})();
+"""
+
 _ROLL_JS = r"""
 (function(){
   /* -- constants -- */
@@ -6504,6 +6923,159 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 #section-garcia .section-back-btn:hover { background: linear-gradient(to bottom, #1e4a2e, #0f2a1a); color: #99ffbb; }
 #section-garcia .section-topbar-title { color: #33cc66; }
 
+/* ── GarSIa main layout ── */
+#garcia-layout {
+  display: flex;
+  height: calc(100vh - 48px);
+  background: #080f0a;
+  overflow: hidden;
+}
+
+/* Left preset panel */
+#garcia-preset {
+  width: 210px;
+  min-width: 210px;
+  background: rgba(8,20,12,0.98);
+  border-right: 1px solid #142a1a;
+  padding: 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  overflow-y: auto;
+}
+.garcia-label {
+  font-size: 0.58rem;
+  letter-spacing: 0.16em;
+  color: #1a6633;
+  font-weight: 700;
+  text-transform: uppercase;
+  margin-top: 10px;
+}
+.garcia-label:first-child { margin-top: 0; }
+.garcia-big {
+  font-size: 1.7rem;
+  font-weight: 700;
+  font-family: monospace;
+  line-height: 1.1;
+}
+.garcia-big.green  { color: #55dd88; }
+.garcia-big.bright { color: #33cc66; }
+.garcia-hint {
+  font-size: 0.65rem;
+  color: #1a4a28;
+  font-family: monospace;
+  line-height: 1.4;
+}
+.garcia-guide {
+  font-size: 0.72rem;
+  color: #2a6640;
+  font-family: monospace;
+  line-height: 1.9;
+}
+.gg-icon { display: inline-block; width: 20px; }
+#garcia-preset select, #garcia-preset input[type=text] {
+  width: 100%;
+  background: #0a1f12;
+  border: 1px solid #1a5c30;
+  color: #66dd99;
+  padding: 6px 8px;
+  font-family: monospace;
+  font-size: 0.78rem;
+  border-radius: 2px;
+  box-sizing: border-box;
+}
+#garcia-preset input[type=range] {
+  accent-color: #33cc66;
+}
+
+/* Right: camera + layers */
+#garcia-right {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+#garcia-viewport {
+  flex: 1;
+  position: relative;
+  background: #000;
+  overflow: hidden;
+}
+#garcia-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+#garcia-start-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(0,0,0,0.7);
+}
+.garcia-start-glyph {
+  font-size: 4rem;
+  filter: drop-shadow(0 0 20px rgba(30,200,80,0.5));
+  animation: garcia-pulse 2s ease-in-out infinite;
+}
+@keyframes garcia-pulse {
+  0%,100%{ filter:drop-shadow(0 0 10px rgba(30,200,80,0.3)); }
+  50%    { filter:drop-shadow(0 0 28px rgba(30,200,80,0.7)); }
+}
+#garcia-start-btn {
+  background: #122a18;
+  border: 1px solid #33cc66;
+  color: #33cc66;
+  font-size: 1.05rem;
+  font-family: monospace;
+  letter-spacing: 0.1em;
+  padding: 14px 40px;
+  border-radius: 3px;
+  cursor: pointer;
+  transition: box-shadow 0.15s, background 0.15s;
+}
+#garcia-start-btn:hover {
+  background: #1a3a22;
+  box-shadow: 0 0 20px rgba(30,200,80,0.35);
+}
+#garcia-start-btn:disabled { opacity: 0.5; cursor: default; }
+
+/* Layer bar */
+#garcia-layers {
+  display: flex;
+  height: 78px;
+  border-top: 1px solid #142a1a;
+  flex-shrink: 0;
+}
+.garcia-layer {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-right: 1px solid #0a180e;
+  background: #080f0a;
+  transition: background 0.25s, box-shadow 0.25s;
+}
+.garcia-layer:last-child { border-right: none; }
+.garcia-layer.active {
+  background: color-mix(in srgb, var(--lc) 12%, #080f0a);
+  box-shadow: inset 0 0 24px color-mix(in srgb, var(--lc) 18%, transparent);
+}
+.garcia-layer.active .gl-name { color: var(--lc); }
+.garcia-layer.active .gl-icon {
+  filter: drop-shadow(0 0 6px var(--lc));
+}
+.gl-icon  { font-size: 1.3rem; }
+.gl-name  { font-size: 0.55rem; letter-spacing: 0.12em; color: #1a4a22; font-weight: 700; }
+.gl-hint  { font-size: 0.75rem; color: #0f2a18; }
+
 /* -- click-hint label under each card -- */
 .home-card-hint {
   font-family: var(--font-ui);
@@ -8370,15 +8942,99 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
 <div class="section-topbar">
   <button class="section-back-btn" onclick="window.ocGoHome()">&#9664; HOME</button>
   <div class="section-topbar-title">🖐&nbsp; GarSIa</div>
-  <div class="section-topbar-status">Gesture Live Looper</div>
+  <div id="garcia-status" class="section-topbar-status">Ready</div>
 </div>
-<div style="display:flex;align-items:center;justify-content:center;height:60vh;flex-direction:column;gap:1.2rem;color:#2d6644;">
-  <div style="font-size:4rem;filter:drop-shadow(0 0 18px rgba(30,200,80,0.4));">🖐</div>
-  <div style="font-size:1.4rem;color:#66dd99;font-weight:700;letter-spacing:0.12em;">GarSIa</div>
-  <div style="font-size:0.95rem;color:#3a7a50;text-align:center;max-width:340px;line-height:1.6;">
-    Gesture-driven live looper — coming soon.<br>
-    Hand tracking · BPM detection · no keyboard.
+
+<div id="garcia-layout">
+
+  <!-- ── Left preset panel ── -->
+  <div id="garcia-preset">
+
+    <div class="garcia-label">SCALE</div>
+    <select id="garcia-scale-sel" onchange="window.garciaChordSet&&window.garciaChordSet(document.getElementById('garcia-chord-input').value)">
+      <option>C major</option><option>D minor</option><option>G major</option>
+      <option>A minor</option><option>E minor</option><option>F major</option>
+      <option>D Dorian</option><option>A Mixolydian</option>
+    </select>
+
+    <div class="garcia-label">CHORD SEQUENCE</div>
+    <input id="garcia-chord-input" type="text" value="Cmaj7, Am7, Dm7, G7"
+           placeholder="e.g. Dm7, G7, Cmaj7"
+           onchange="window.garciaChordSet&&window.garciaChordSet(this.value)" />
+    <div class="garcia-hint">comma-separated · pinky gesture advances</div>
+
+    <div class="garcia-label">NOW PLAYING</div>
+    <div id="garcia-chord-now" class="garcia-big green">Cmaj7</div>
+
+    <div class="garcia-label">BPM</div>
+    <div id="garcia-bpm-val" class="garcia-big bright">120</div>
+    <input type="range" min="60" max="180" value="120" step="5"
+           oninput="window.garciaBPMSet&&window.garciaBPMSet(this.value)"
+           style="width:100%;margin:4px 0 0;" />
+    <div class="garcia-hint">or tap wrist to set live</div>
+
+    <div class="garcia-label" style="margin-top:16px;">GESTURE GUIDE</div>
+    <div class="garcia-guide">
+      <div><span class="gg-icon">✊</span> Fist &nbsp;→ Drums</div>
+      <div><span class="gg-icon">☝</span> Point → Bass</div>
+      <div><span class="gg-icon">✌</span> Peace → Keys</div>
+      <div><span class="gg-icon">🖖</span> Three → Lead</div>
+      <div><span class="gg-icon">🖐</span> Four &nbsp;→ Pad</div>
+      <div><span class="gg-icon">🖐</span> Palm &nbsp;→ All</div>
+      <div><span class="gg-icon">👍</span> Thumb → BPM ▲</div>
+      <div><span class="gg-icon">🤙</span> Shaka → BPM ▼</div>
+    </div>
+    <div class="garcia-hint" style="margin-top:6px;">Hold gesture 0.6 s to activate</div>
+
+    <button onclick="window.garciaStop()"
+            style="margin-top:auto;background:#1a2a1a;border:1px solid #1a5c30;color:#66dd99;
+                   padding:8px;cursor:pointer;font-family:monospace;letter-spacing:0.08em;width:100%;">
+      ■ STOP
+    </button>
   </div>
+
+  <!-- ── Camera / canvas area ── -->
+  <div id="garcia-right">
+    <div id="garcia-viewport">
+      <video id="garcia-video" playsinline muted style="display:none"></video>
+      <canvas id="garcia-canvas"></canvas>
+      <div id="garcia-start-overlay">
+        <div class="garcia-start-glyph">🖐</div>
+        <button id="garcia-start-btn" onclick="window.garciaStart()">▶ Start Camera</button>
+        <div class="garcia-hint" style="color:#2d6644;">Allow camera access when prompted</div>
+      </div>
+    </div>
+
+    <!-- ── Layer indicators ── -->
+    <div id="garcia-layers">
+      <div id="garcia-layer-drums" class="garcia-layer" style="--lc:#ff5555">
+        <div class="gl-icon">🥁</div>
+        <div class="gl-name">DRUMS</div>
+        <div class="gl-hint">✊</div>
+      </div>
+      <div id="garcia-layer-bass" class="garcia-layer" style="--lc:#ff9933">
+        <div class="gl-icon">🎸</div>
+        <div class="gl-name">BASS</div>
+        <div class="gl-hint">☝</div>
+      </div>
+      <div id="garcia-layer-keys" class="garcia-layer" style="--lc:#ffee44">
+        <div class="gl-icon">🎹</div>
+        <div class="gl-name">KEYS</div>
+        <div class="gl-hint">✌</div>
+      </div>
+      <div id="garcia-layer-lead" class="garcia-layer" style="--lc:#44ff88">
+        <div class="gl-icon">🎺</div>
+        <div class="gl-name">LEAD</div>
+        <div class="gl-hint">🖖</div>
+      </div>
+      <div id="garcia-layer-pad" class="garcia-layer" style="--lc:#44aaff">
+        <div class="gl-icon">🌊</div>
+        <div class="gl-name">PAD</div>
+        <div class="gl-hint">🖐</div>
+      </div>
+    </div>
+  </div>
+
 </div>
 """)
 
@@ -8390,6 +9046,7 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         return badge, status_txt
 
     demo.load(_startup_check, outputs=[ollama_status, out_status])
+    demo.load(fn=None, js=_GARCIA_JS)
     # Push Ollama status to the header pill after page load
     demo.load(
         fn=None,
