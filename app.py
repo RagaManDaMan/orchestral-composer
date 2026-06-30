@@ -942,11 +942,43 @@ function _chordNotes(sym, octave) {
   return ivs.map(function(iv){ var m=base+rpc+iv; return _NOTE_NAMES[m%12]+Math.floor(m/12-1); });
 }
 
-/* ── Audio init ── */
-function _initAudio() {
-  if (_audioReady || !window.Tone) return;
-  _audioReady = true;
-  Tone.start();
+/* ── Self-contained drum synth (mirrors _DRUM_SYNTH_JS but scoped to GarSIa) ── */
+function _garciaKick(t,v){
+  var ctx=Tone.getContext().rawContext;
+  var g=ctx.createGain(); g.gain.setValueAtTime(v,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.4);
+  g.connect(ctx.destination);
+  var o=ctx.createOscillator(); o.frequency.setValueAtTime(180,t);
+  o.frequency.exponentialRampToValueAtTime(28,t+0.35);
+  o.connect(g); o.start(t); o.stop(t+0.45);
+}
+function _garciaSnare(t,v){
+  var ctx=Tone.getContext().rawContext;
+  var buf=ctx.createBuffer(1,ctx.sampleRate*0.22,ctx.sampleRate);
+  var d=buf.getChannelData(0); for(var i=0;i<d.length;i++) d[i]=(Math.random()*2-1);
+  var src=ctx.createBufferSource(); src.buffer=buf;
+  var hp=ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=1200;
+  var g=ctx.createGain(); g.gain.setValueAtTime(v*0.7,t); g.gain.exponentialRampToValueAtTime(0.001,t+0.18);
+  src.connect(hp); hp.connect(g); g.connect(ctx.destination); src.start(t); src.stop(t+0.22);
+}
+function _garciaHihat(t,v,open){
+  var ctx=Tone.getContext().rawContext;
+  var buf=ctx.createBuffer(1,ctx.sampleRate*0.1,ctx.sampleRate);
+  var d=buf.getChannelData(0); for(var i=0;i<d.length;i++) d[i]=(Math.random()*2-1);
+  var src=ctx.createBufferSource(); src.buffer=buf;
+  var hp=ctx.createBiquadFilter(); hp.type='highpass'; hp.frequency.value=8000;
+  var dur=open?0.32:0.04;
+  var g=ctx.createGain(); g.gain.setValueAtTime(v*0.45,t); g.gain.exponentialRampToValueAtTime(0.001,t+dur);
+  src.connect(hp); hp.connect(g); g.connect(ctx.destination); src.start(t); src.stop(t+dur+0.01);
+}
+function _garciaDrumHit(note,t,v){
+  if(note===36||note===35) _garciaKick(t,v);
+  else if(note===38||note===40) _garciaSnare(t,v);
+  else if(note===42||note===44) _garciaHihat(t,v,false);
+  else if(note===46) _garciaHihat(t,v,true);
+}
+
+/* ── Audio init (called after Tone.start() resolves) ── */
+function _buildAudio() {
   Tone.Transport.bpm.value = _currentBPM;
 
   _bassSynth = new Tone.MonoSynth({oscillator:{type:'sawtooth'},
@@ -962,10 +994,9 @@ function _initAudio() {
     envelope:{attack:1.0,decay:0.2,sustain:0.9,release:2.5}}).toDestination();
   _padSynth.volume.value = -14;
 
-  /* Drum loop — 1-bar 4/4 pattern */
   var _dp = [
     {time:'0:0:0',note:36,v:0.9},{time:'0:1:0',note:38,v:0.82},
-    {time:'0:2:0',note:36,v:0.85},{time:'0:2:2',note:36,v:0.6},
+    {time:'0:2:0',note:36,v:0.85},{time:'0:2:2',note:36,v:0.55},
     {time:'0:3:0',note:38,v:0.82},
     {time:'0:0:0',note:42,v:0.5},{time:'0:0:2',note:42,v:0.32},
     {time:'0:1:0',note:42,v:0.48},{time:'0:1:2',note:42,v:0.30},
@@ -973,31 +1004,47 @@ function _initAudio() {
     {time:'0:3:0',note:42,v:0.48},{time:'0:3:2',note:42,v:0.28},
   ];
   _drumLoop = new Tone.Part(function(time,ev){
-    if (_layers.drums && window._drumHit) _drumHit(ev.note,time,ev.v);
+    if(_layers.drums) _garciaDrumHit(ev.note,time,ev.v);
   }, _dp);
   _drumLoop.loop=true; _drumLoop.loopEnd='1m'; _drumLoop.start(0);
 
-  _bassLoop = new Tone.Sequence(function(time,beat){
-    if (!_layers.bass||!_bassSynth) return;
-    var sym=_currentChords[_chordIdx]||'C';
-    var rm=sym.match(/^([A-G][#b]?)/);
+  _bassLoop = new Tone.Sequence(function(time){
+    if(!_layers.bass||!_bassSynth) return;
+    var rm=(_currentChords[_chordIdx]||'C').match(/^([A-G][#b]?)/);
     if(rm) _bassSynth.triggerAttackRelease(rm[1]+'2','8n',time,0.7);
   },[0,null,2,null],'4n');
   _bassLoop.start(0);
 
   _keysLoop = new Tone.Loop(function(time){
-    if (!_layers.keys||!_keysSynth) return;
+    if(!_layers.keys||!_keysSynth) return;
     _keysSynth.triggerAttackRelease(_chordNotes(_currentChords[_chordIdx]||'C',4),'2n',time,0.45);
   },'1m');
   _keysLoop.start(0);
 
   _padLoop = new Tone.Loop(function(time){
-    if (!_layers.pad||!_padSynth) return;
+    if(!_layers.pad||!_padSynth) return;
     _padSynth.triggerAttackRelease(_chordNotes(_currentChords[_chordIdx]||'C',3),'2m',time,0.3);
   },'2m');
   _padLoop.start(0);
 
   Tone.Transport.start();
+}
+
+/* ── Audio init: load Tone.js if absent, then start AudioContext ── */
+function _initAudio() {
+  if(_audioReady) return;
+  _audioReady = true;
+  function _go() {
+    Tone.start().then(function(){ _buildAudio(); })
+                .catch(function(e){ console.error('GarSIa Tone.start failed',e); });
+  }
+  if(window.Tone) { _go(); return; }
+  /* Tone.js not on page yet (user hasn't opened a MIDI player) — load it now */
+  var s=document.createElement('script');
+  s.src='https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js';
+  s.onload=_go;
+  s.onerror=function(){ console.error('GarSIa: failed to load Tone.js'); };
+  document.head.appendChild(s);
 }
 
 /* ── Canvas drawing ── */
