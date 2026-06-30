@@ -821,6 +821,15 @@ var _padSynth  = null;
 /* Audio ready flag */
 var _audioReady = false;
 
+/* ── Loop recorder ── */
+var _recBuffer  = [];     /* rolling buffer: [{type,note,vel,synthKey,t,dur?}] */
+var _REC_MAX_SEC = 8;     /* keep last 8 seconds */
+var _drawNoteOn = null;   /* {note, t, synthKey} while a draw note is held */
+var _loopPart   = null;
+var _looping    = false;
+var _loopBars   = 2;      /* bars to capture on left-fist gesture */
+var _leftCooldown = 0;    /* frames before left fist can fire again */
+
 /* ── BPM snap ── */
 var _BPMS = [60,65,70,72,75,80,85,90,95,100,105,110,115,120,125,130,140,150,160,170,180];
 function _snapBPM(raw) {
@@ -911,6 +920,61 @@ function _midiToName(m) {
   return names[m%12] + Math.floor(m/12-1);
 }
 function _noteColor(midi) { return _PC_COLOR[midi % 12]; }
+
+/* ── Loop recording ── */
+function _recPush(ev) {
+  /* ev must have .t = Tone.Transport.seconds at event time */
+  _recBuffer.push(ev);
+  /* prune anything older than _REC_MAX_SEC */
+  var cutoff = Tone.Transport.seconds - _REC_MAX_SEC;
+  while(_recBuffer.length && _recBuffer[0].t < cutoff) _recBuffer.shift();
+}
+
+function _lockLoop() {
+  if(_looping) { _clearLoop(); return; }
+  if(!_audioReady) return;
+  var loopSec = _loopBars * 4 * (60 / _currentBPM);
+  var now = Tone.Transport.seconds;
+  var cutoff = now - loopSec;
+  var events = _recBuffer.filter(function(e){ return e.t >= cutoff; });
+  if(!events.length) return;
+  var t0 = events[0].t;
+  /* Build Tone.Part events: time offset from t0, absolute transport position → offset */
+  var partEvents = events.map(function(e){
+    return Object.assign({}, e, {offset: e.t - t0});
+  });
+  _loopPart = new Tone.Part(function(time, ev){
+    if(ev.type==='drum'){
+      _garciaDrumHit(ev.note, time, ev.vel);
+    } else if(ev.type==='draw'){
+      var syn = ev.synthKey==='bass'?_bassSynth:ev.synthKey==='pad'?_padSynth:_drawSynth;
+      if(!syn) return;
+      if(ev.synthKey==='pad'){
+        var offsets=[0,7,12];
+        offsets.forEach(function(iv){
+          try{_padSynth.triggerAttackRelease(_midiToFreq(ev.note+iv),(ev.dur||0.2),time,0.5);}catch(ex){}
+        });
+      } else {
+        var dur = Math.max(0.05, ev.dur||0.15);
+        try{syn.triggerAttackRelease(_midiToFreq(ev.note), dur, time, 0.6);}catch(ex){}
+      }
+    }
+  }, partEvents.map(function(e){ return [e.offset, e]; }));
+  _loopPart.loop = true;
+  _loopPart.loopEnd = loopSec;
+  /* Start at next bar boundary */
+  var beatSec = 60 / _currentBPM;
+  var barSec  = beatSec * 4;
+  var elapsed = now % barSec;
+  var startIn = elapsed < 0.05 ? 0 : (barSec - elapsed);
+  _loopPart.start('+' + startIn.toFixed(3));
+  _looping = true;
+}
+
+function _clearLoop() {
+  if(_loopPart){ try{_loopPart.stop();_loopPart.dispose();}catch(e){} _loopPart=null; }
+  _looping = false;
+}
 
 /* ── Wrist tap → BPM ── */
 function _detectTap(wristY, ts) {
@@ -1110,11 +1174,21 @@ function _drawHUD(drumGesture, drawGesture, W, H) {
     _ctx.textAlign='left'; _ctx.shadowBlur=0;
   }
 
-  /* Hint text — top right */
-  _ctx.font='11px monospace'; _ctx.fillStyle='#2a5a33'; _ctx.textAlign='right';
-  _ctx.fillText('✊ kick  👍 snare  ☝ hihat  ✌ open', W-10, 24);
-  _ctx.fillText('🖖 lead  🖐 bass  🖐✨ pad  ← point to draw pitch', W-10, 40);
-  _ctx.textAlign='left';
+  /* Loop status banner */
+  if(_looping) {
+    _ctx.font='bold 18px monospace';
+    _ctx.fillStyle='#ff4488'; _ctx.shadowColor='#ff4488'; _ctx.shadowBlur=14;
+    _ctx.textAlign='center';
+    _ctx.fillText('⟳  LOOPING  —  left ✊ to clear', W/2, 26);
+    _ctx.textAlign='left'; _ctx.shadowBlur=0;
+  } else {
+    /* Hint text — top right */
+    _ctx.font='11px monospace'; _ctx.fillStyle='#2a5a33'; _ctx.textAlign='right';
+    _ctx.fillText('RIGHT: ✊ kick  👍 snare  ☝ hihat  ✌ open', W-10, 20);
+    _ctx.fillText('RIGHT: 🖖 lead  🖐 bass  🖐✨ pad  (point = draw pitch)', W-10, 34);
+    _ctx.fillText('LEFT ✊: lock last '+_loopBars+' bars into loop', W-10, 48);
+    _ctx.textAlign='left';
+  }
 
   /* Beat dots */
   if (window.Tone && Tone.Transport) {
@@ -1147,40 +1221,63 @@ function _onResults(results, ts) {
 
   var drumGesture=null, drawGesture=null;
   var activeDrawNote = -1;
+  var activeDrawSynth = null;
+  var leftFist = false;
 
   if (results.multiHandLandmarks&&results.multiHandLandmarks.length) {
     for (var h=0;h<results.multiHandLandmarks.length;h++) {
       var lm=results.multiHandLandmarks[h];
-      var isRight=results.multiHandedness&&results.multiHandedness[h]&&
-                  results.multiHandedness[h].label==='Right';
-      var f=_fingers(lm,isRight);
-      var dg=_classifyDrum(f);
-      var dw=_classifyDraw(f);
+      var handLabel = results.multiHandedness&&results.multiHandedness[h]&&
+                      results.multiHandedness[h].label;
+      /* MediaPipe labels from camera's POV: "Right" = user's left in mirror */
+      var isUserRight = (handLabel==='Left');
+      var f=_fingers(lm, isUserRight);
 
-      if(h===0) _detectTap(lm[0].y,ts);
-
-      if(dg) {
-        /* Drum gesture: use skeleton color + hold logic */
-        _drawSkeleton(lm, dg.color, W, H);
-        if(h===0) drumGesture=dg;
-      } else if(dw) {
-        /* Draw mode: track index fingertip (lm[8]) — mirrored X */
-        var fx = 1 - lm[8].x; /* mirror to match canvas */
-        var fy = lm[8].y;
-        var midi = _yToMidi(fy);
-        /* Shift pitch down 1 octave for bass mode */
-        if(dw.synth==='bass') midi -= 12;
-        var col = _noteColor(midi);
-        _trail.push({x:fx, y:fy, color:col, age:0});
-        _drawPitchLine(fy, col, _midiToName(midi), W, H);
-        _drawSkeleton(lm, col, W, H);
-        if(h===0){ drawGesture=dw; activeDrawNote=midi; }
+      if(isUserRight) {
+        /* ── RIGHT hand: drums + draw ── */
+        _detectTap(lm[0].y,ts);
+        var dg=_classifyDrum(f);
+        var dw=_classifyDraw(f);
+        if(dg) {
+          _drawSkeleton(lm, dg.color, W, H);
+          drumGesture=dg;
+        } else if(dw) {
+          var fx = 1 - lm[8].x;
+          var fy = lm[8].y;
+          var midi = _yToMidi(fy);
+          if(dw.synth==='bass') midi -= 12;
+          var col = _noteColor(midi);
+          _trail.push({x:fx, y:fy, color:col, age:0});
+          _drawPitchLine(fy, col, _midiToName(midi), W, H);
+          _drawSkeleton(lm, col, W, H);
+          drawGesture=dw; activeDrawNote=midi; activeDrawSynth=dw.synth;
+        } else {
+          _drawSkeleton(lm, '#334433', W, H);
+        }
       } else {
-        _drawSkeleton(lm, '#334433', W, H);
+        /* ── LEFT hand: loop control ── */
+        /* Fist = all fingers curled */
+        var allCurled = !f.i&&!f.m&&!f.r&&!f.p&&!f.t;
+        if(allCurled) leftFist=true;
+        var leftCol = _looping ? '#ff4488' : '#4488ff';
+        _drawSkeleton(lm, leftCol, W, H);
+        /* Draw loop-lock indicator near left wrist */
+        var wx=(1-lm[0].x)*W, wy=lm[0].y*H;
+        _ctx.font='bold 14px monospace';
+        _ctx.fillStyle=leftCol; _ctx.shadowColor=leftCol; _ctx.shadowBlur=8;
+        _ctx.fillText(allCurled?(_looping?'● LOOP OFF':'● LOOP'):(_looping?'⟳ LOOPING':'◯ hold fist'), wx-30, wy-14);
+        _ctx.shadowBlur=0;
       }
     }
   } else {
     _lastWristY=null;
+  }
+
+  /* ── Left fist → loop toggle (with cooldown) ── */
+  if(_leftCooldown>0) _leftCooldown--;
+  if(leftFist && _leftCooldown===0 && _audioReady) {
+    _lockLoop();
+    _leftCooldown=60; /* ~2s cooldown so one hold doesn't fire repeatedly */
   }
 
   /* ── Drum hit logic (hold HOLD_FRAMES → fire once, cooldown) ── */
@@ -1189,7 +1286,9 @@ function _onResults(results, ts) {
     if (drumGesture.name===_prevGestureName) _gestureHoldFrames++;
     else _gestureHoldFrames=0;
     if (_gestureHoldFrames>=HOLD_FRAMES && _gestureCooldown===0) {
-      _garciaDrumHit(drumGesture.note, Tone.now(), drumGesture.note===36?0.9:drumGesture.note===38?0.82:0.5);
+      var vel = drumGesture.note===36?0.9:drumGesture.note===38?0.82:0.5;
+      _garciaDrumHit(drumGesture.note, Tone.now(), vel);
+      if(_audioReady) _recPush({type:'drum', note:drumGesture.note, vel:vel, t:Tone.Transport.seconds});
       _gestureHoldFrames=0;
       _gestureCooldown=COOLDOWN_FRAMES;
     }
@@ -1205,24 +1304,39 @@ function _onResults(results, ts) {
     if(activeDrawNote>=0) {
       if(activeDrawNote !== _lastDrawNote) {
         var freq=_midiToFreq(activeDrawNote);
-        var now=Tone.now();
-        if(drawGesture.synth==='lead'||drawGesture.synth==='bass') {
-          var syn = drawGesture.synth==='bass' ? _bassSynth : _drawSynth;
-          try { syn.frequency.rampTo(freq, 0.04, now); syn.triggerAttack(freq, now); } catch(e){}
-        } else if(drawGesture.synth==='pad') {
-          /* Pad: trigger arpeggio chord (root + 4th + 7th) */
-          var offsets=[0,7,12];
-          offsets.forEach(function(iv){
-            try{ _padSynth.triggerAttack(_midiToFreq(activeDrawNote+iv), now); }catch(e){}
-          });
+        var nowT=Tone.now();
+        /* Close previous draw note and record it */
+        if(_drawNoteOn!==null) {
+          var dur = Tone.Transport.seconds - _drawNoteOn.t;
+          _recPush({type:'draw', note:_drawNoteOn.note, synthKey:_drawNoteOn.synthKey, t:_drawNoteOn.t, dur:dur, vel:0.6});
+          _drawNoteOn=null;
+          try{_drawSynth.triggerRelease(nowT);}catch(e){}
+          try{_bassSynth.triggerRelease(nowT);}catch(e){}
+          try{_padSynth.releaseAll(nowT);}catch(e){}
         }
+        /* Trigger new note */
+        if(activeDrawSynth==='lead'||activeDrawSynth==='bass') {
+          var syn = activeDrawSynth==='bass' ? _bassSynth : _drawSynth;
+          try{syn.triggerAttack(freq, nowT);}catch(e){}
+        } else if(activeDrawSynth==='pad') {
+          try{_padSynth.triggerAttack(_midiToFreq(activeDrawNote), nowT);}catch(e){}
+          try{_padSynth.triggerAttack(_midiToFreq(activeDrawNote+7), nowT);}catch(e){}
+          try{_padSynth.triggerAttack(_midiToFreq(activeDrawNote+12), nowT);}catch(e){}
+        }
+        _drawNoteOn={note:activeDrawNote, synthKey:activeDrawSynth, t:Tone.Transport.seconds};
         _lastDrawNote=activeDrawNote;
       }
     } else if(_lastDrawNote>=0) {
-      /* Finger lifted — release */
-      try{ _drawSynth.triggerRelease(); }catch(e){}
-      try{ _bassSynth.triggerRelease(); }catch(e){}
-      try{ _padSynth.releaseAll(); }catch(e){}
+      /* Finger lifted — release and record */
+      var nowT2=Tone.now();
+      if(_drawNoteOn!==null) {
+        var dur2 = Tone.Transport.seconds - _drawNoteOn.t;
+        _recPush({type:'draw', note:_drawNoteOn.note, synthKey:_drawNoteOn.synthKey, t:_drawNoteOn.t, dur:dur2, vel:0.6});
+        _drawNoteOn=null;
+      }
+      try{_drawSynth.triggerRelease(nowT2);}catch(e){}
+      try{_bassSynth.triggerRelease(nowT2);}catch(e){}
+      try{_padSynth.releaseAll(nowT2);}catch(e){}
       _lastDrawNote=-1;
     }
   }
@@ -1334,7 +1448,8 @@ window.garciaStop = function() {
   try{ if(_drawSynth) _drawSynth.triggerRelease(); }catch(e){}
   try{ if(_bassSynth) _bassSynth.triggerRelease(); }catch(e){}
   try{ if(_padSynth) _padSynth.releaseAll(); }catch(e){}
-  _lastDrawNote=-1; _trail=[];
+  _clearLoop();
+  _lastDrawNote=-1; _trail=[]; _recBuffer=[]; _drawNoteOn=null;
   var btn=document.getElementById('garcia-start-btn');
   var ov=document.getElementById('garcia-start-overlay');
   if(btn){btn.textContent='► Start Camera';btn.disabled=false;btn.style.display='';}
