@@ -1142,9 +1142,7 @@ window.garciaStart = function() {
   _resize(); window.addEventListener('resize',_resize);
 
   function _boot() {
-    _hands=new Hands({locateFile:function(f){
-      return 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/'+f;
-    }});
+    _hands=new Hands({locateFile:window._garciaLocate});
     _hands.setOptions({maxNumHands:2,modelComplexity:1,
       minDetectionConfidence:0.75,minTrackingConfidence:0.6});
     _hands.onResults(function(r){_onResults(r,performance.now());});
@@ -1156,19 +1154,60 @@ window.garciaStart = function() {
       _running=true;
       if(btn){btn.style.display='none';}
       var ov=document.getElementById('garcia-start-overlay'); if(ov) ov.style.display='none';
-      if(status) status.textContent='Camera active · hold gesture 0.6s to toggle layer';
+      if(status) status.textContent='✓ Camera live — show a hand to begin';
       _initAudio();
     }).catch(function(e){
-      if(status) status.textContent='Camera error: '+e.message;
+      if(status) status.textContent='✗ Camera error: '+e.message+' (allow camera in browser)';
       if(btn){btn.textContent='► Start Camera';btn.disabled=false;}
     });
   }
 
+  /* Pinned CDN versions — unpinned @0.4 resolves inconsistently */
+  var _MP_VER  = '0.4.1675469240';
+  var _CU_VER  = '0.3.1675466862';
+  var _MP_BASE = 'https://cdn.jsdelivr.net/npm/@mediapipe/hands@'+_MP_VER+'/';
+  var _CU_URL  = 'https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@'+_CU_VER+'/camera_utils.js';
+
+  /* Override locateFile so the Hands constructor finds its WASM at the pinned path */
+  window._garciaLocate = function(f){ return _MP_BASE+f; };
+
+  function _err(msg) {
+    if(status) status.textContent = '✗ '+msg+' — check DevTools console';
+    if(btn){ btn.textContent='► Retry'; btn.disabled=false; }
+  }
+
+  function _loadScript(src,cb,errcb) {
+    var s=document.createElement('script'); s.src=src; s.crossOrigin='anonymous';
+    s.onload=cb; s.onerror=errcb||function(){ _err('Failed to load '+src.split('/').pop()); };
+    document.head.appendChild(s);
+  }
+
+  function _bootWhenReady() {
+    /* Hands constructor may not be available on the same tick as onload */
+    if(typeof Hands==='undefined' || typeof Camera==='undefined') {
+      setTimeout(_bootWhenReady, 80); return;
+    }
+    if(status) status.textContent = 'Initialising model…';
+    _boot();
+  }
+
+  var _loadTimeout = setTimeout(function(){
+    if(!_running) _err('Timed out — CDN may be blocked, try a different network');
+  }, 35000);
+
   if(typeof Hands==='undefined') {
-    _loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js',function(){
-      _loadScript('https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js',function(){ _boot(); });
-    });
-  } else { _boot(); }
+    if(status) status.textContent = 'Downloading camera utils…';
+    _loadScript(_CU_URL, function(){
+      if(status) status.textContent = 'Downloading hand-tracking model (≈8 MB)…';
+      _loadScript(_MP_BASE+'hands.js', function(){
+        clearTimeout(_loadTimeout);
+        _bootWhenReady();
+      }, function(){ _err('hands.js failed to load'); });
+    }, function(){ _err('camera_utils.js failed to load'); });
+  } else {
+    clearTimeout(_loadTimeout);
+    _bootWhenReady();
+  }
 };
 
 window.garciaStop = function() {
