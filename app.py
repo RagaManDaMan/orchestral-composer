@@ -921,6 +921,26 @@ function _midiToName(m) {
 }
 function _noteColor(midi) { return _PC_COLOR[midi % 12]; }
 
+/* ── UI helpers ── */
+function _flashTile(id, dur) {
+  var el = document.getElementById(id); if(!el) return;
+  el.classList.add('flash');
+  setTimeout(function(){ el.classList.remove('flash'); }, dur||180);
+}
+function _setLoopUI(on) {
+  var el = document.getElementById('gl-loop');
+  var st = document.getElementById('gp-loop-status');
+  if(el){ el.classList.toggle('looping', on); }
+  if(st){ st.className = on ? 'gp-loop-active' : 'gp-loop-idle';
+          st.textContent = on ? '⟳  looping' : 'idle'; }
+}
+function _setNowPlaying(icon, note) {
+  var np = document.getElementById('gp-now-playing');
+  var nn = document.getElementById('gp-note-name');
+  if(np) np.textContent = icon || '—';
+  if(nn) nn.textContent = note || '—';
+}
+
 /* ── Loop recording ── */
 function _recPush(ev) {
   /* ev must have .t = Tone.Transport.seconds at event time */
@@ -969,11 +989,13 @@ function _lockLoop() {
   var startIn = elapsed < 0.05 ? 0 : (barSec - elapsed);
   _loopPart.start('+' + startIn.toFixed(3));
   _looping = true;
+  _setLoopUI(true);
 }
 
 function _clearLoop() {
   if(_loopPart){ try{_loopPart.stop();_loopPart.dispose();}catch(e){} _loopPart=null; }
   _looping = false;
+  _setLoopUI(false);
 }
 
 /* ── Wrist tap → BPM ── */
@@ -995,6 +1017,8 @@ function _detectTap(wristY, ts) {
           if (window.Tone) Tone.Transport.bpm.rampTo(_currentBPM, 0.1);
           var el = document.getElementById('garcia-bpm-val');
           if (el) el.textContent = _currentBPM;
+          var sl = document.getElementById('garcia-bpm-slider');
+          if (sl) sl.value = _currentBPM;
         }
       }
     }
@@ -1174,20 +1198,13 @@ function _drawHUD(drumGesture, drawGesture, W, H) {
     _ctx.textAlign='left'; _ctx.shadowBlur=0;
   }
 
-  /* Loop status banner */
+  /* Loop pill on canvas */
   if(_looping) {
-    _ctx.font='bold 18px monospace';
-    _ctx.fillStyle='#ff4488'; _ctx.shadowColor='#ff4488'; _ctx.shadowBlur=14;
-    _ctx.textAlign='center';
-    _ctx.fillText('⟳  LOOPING  —  left ✊ to clear', W/2, 26);
+    _ctx.font='bold 14px monospace';
+    _ctx.fillStyle='#ff4488'; _ctx.shadowColor='#ff4488'; _ctx.shadowBlur=10;
+    _ctx.textAlign='right';
+    _ctx.fillText('⟳ LOOPING', W-12, 24);
     _ctx.textAlign='left'; _ctx.shadowBlur=0;
-  } else {
-    /* Hint text — top right */
-    _ctx.font='11px monospace'; _ctx.fillStyle='#2a5a33'; _ctx.textAlign='right';
-    _ctx.fillText('RIGHT: ✊ kick  👍 snare  ☝ hihat  ✌ open', W-10, 20);
-    _ctx.fillText('RIGHT: 🖖 lead  🖐 bass  🖐✨ pad  (point = draw pitch)', W-10, 34);
-    _ctx.fillText('LEFT ✊: lock last '+_loopBars+' bars into loop', W-10, 48);
-    _ctx.textAlign='left';
   }
 
   /* Beat dots */
@@ -1289,6 +1306,10 @@ function _onResults(results, ts) {
       var vel = drumGesture.note===36?0.9:drumGesture.note===38?0.82:0.5;
       _garciaDrumHit(drumGesture.note, Tone.now(), vel);
       if(_audioReady) _recPush({type:'drum', note:drumGesture.note, vel:vel, t:Tone.Transport.seconds});
+      /* Flash the corresponding tile */
+      var tileId = drumGesture.note===36?'gl-kick':drumGesture.note===38?'gl-snare':drumGesture.note===42?'gl-hihat':'gl-openhat';
+      _flashTile(tileId, 200);
+      _setNowPlaying(drumGesture.icon, drumGesture.name);
       _gestureHoldFrames=0;
       _gestureCooldown=COOLDOWN_FRAMES;
     }
@@ -1325,6 +1346,9 @@ function _onResults(results, ts) {
         }
         _drawNoteOn={note:activeDrawNote, synthKey:activeDrawSynth, t:Tone.Transport.seconds};
         _lastDrawNote=activeDrawNote;
+        var drawTile = activeDrawSynth==='bass'?'gl-bass':activeDrawSynth==='pad'?'gl-pad':'gl-lead';
+        _flashTile(drawTile, 300);
+        _setNowPlaying(activeDrawSynth==='bass'?'🖐':activeDrawSynth==='pad'?'🖐✨':'🖖', _midiToName(activeDrawNote));
       }
     } else if(_lastDrawNote>=0) {
       /* Finger lifted — release and record */
@@ -7200,59 +7224,86 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 
 /* Left preset panel */
 #garcia-preset {
-  width: 210px;
-  min-width: 210px;
-  background: rgba(8,20,12,0.98);
-  border-right: 1px solid #142a1a;
-  padding: 14px 12px;
+  width: 220px;
+  min-width: 220px;
+  background: #070e09;
+  border-right: 1px solid #0e2216;
+  padding: 14px 14px 12px;
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  gap: 0;
   overflow-y: auto;
 }
-.garcia-label {
-  font-size: 0.58rem;
-  letter-spacing: 0.16em;
-  color: #1a6633;
+.gp-section { margin-bottom: 2px; }
+.gp-label {
+  font-size: 0.52rem;
+  letter-spacing: 0.18em;
+  color: #1a5c30;
   font-weight: 700;
   text-transform: uppercase;
-  margin-top: 10px;
+  margin-bottom: 5px;
 }
-.garcia-label:first-child { margin-top: 0; }
-.garcia-big {
-  font-size: 1.7rem;
+.gp-divider { height: 1px; background: #0e2216; margin: 10px 0; }
+.gp-now {
+  font-size: 1.5rem;
   font-weight: 700;
   font-family: monospace;
-  line-height: 1.1;
+  color: #55dd88;
+  line-height: 1;
+  min-height: 1.6rem;
+  transition: color 0.15s;
 }
-.garcia-big.green  { color: #55dd88; }
-.garcia-big.bright { color: #33cc66; }
+.gp-note-name {
+  font-size: 0.85rem;
+  font-family: monospace;
+  color: #2a8844;
+  margin-top: 2px;
+  min-height: 1rem;
+}
+.gp-bpm-row { display: flex; align-items: baseline; gap: 6px; }
+.gp-bpm-num { font-size: 2.2rem; font-weight: 700; font-family: monospace; color: #33cc66; line-height: 1; }
+.gp-bpm-unit { font-size: 0.7rem; color: #1a6633; font-family: monospace; letter-spacing: 0.1em; }
+.gp-loop-idle  { font-size: 0.9rem; font-family: monospace; color: #1a5c30; padding: 5px 0; }
+.gp-loop-active { font-size: 0.9rem; font-family: monospace; color: #ff4488;
+                   animation: gp-loop-blink 1s ease-in-out infinite; padding: 5px 0; }
+@keyframes gp-loop-blink { 0%,100%{opacity:1} 50%{opacity:0.5} }
+.gp-micro {
+  font-size: 0.58rem;
+  color: #1a4a28;
+  font-family: monospace;
+  line-height: 1.5;
+}
+.gp-how-group { margin-bottom: 2px; }
+.gp-how-head {
+  font-size: 0.6rem;
+  letter-spacing: 0.1em;
+  color: #2a7a44;
+  font-family: monospace;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+.gp-how-row { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
+.gph-g { font-size: 1rem; width: 28px; text-align: center; flex-shrink: 0; }
+.gph-t { font-size: 0.68rem; color: #44aa66; font-family: monospace; line-height: 1.3; }
+.gp-stop-btn {
+  background: #0a1a10;
+  border: 1px solid #1a5c30;
+  color: #44aa66;
+  padding: 9px;
+  cursor: pointer;
+  font-family: monospace;
+  letter-spacing: 0.1em;
+  font-size: 0.8rem;
+  width: 100%;
+  transition: background 0.15s, color 0.15s;
+  margin-top: 8px;
+}
+.gp-stop-btn:hover { background: #1a3a22; color: #99ffbb; }
 .garcia-hint {
   font-size: 0.65rem;
   color: #1a4a28;
   font-family: monospace;
   line-height: 1.4;
-}
-.garcia-guide {
-  font-size: 0.72rem;
-  color: #2a6640;
-  font-family: monospace;
-  line-height: 1.9;
-}
-.gg-icon { display: inline-block; width: 20px; }
-#garcia-preset select, #garcia-preset input[type=text] {
-  width: 100%;
-  background: #0a1f12;
-  border: 1px solid #1a5c30;
-  color: #66dd99;
-  padding: 6px 8px;
-  font-family: monospace;
-  font-size: 0.78rem;
-  border-radius: 2px;
-  box-sizing: border-box;
-}
-#garcia-preset input[type=range] {
-  accent-color: #33cc66;
 }
 
 /* Right: camera + layers */
@@ -7315,8 +7366,8 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 /* Layer bar */
 #garcia-layers {
   display: flex;
-  height: 78px;
-  border-top: 1px solid #142a1a;
+  height: 72px;
+  border-top: 1px solid #0e2216;
   flex-shrink: 0;
 }
 .garcia-layer {
@@ -7327,20 +7378,24 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
   justify-content: center;
   gap: 2px;
   border-right: 1px solid #0a180e;
-  background: #080f0a;
-  transition: background 0.25s, box-shadow 0.25s;
+  background: #070e09;
+  transition: background 0.15s, box-shadow 0.15s;
+  cursor: default;
 }
 .garcia-layer:last-child { border-right: none; }
-.garcia-layer.active {
-  background: color-mix(in srgb, var(--lc) 12%, #080f0a);
-  box-shadow: inset 0 0 24px color-mix(in srgb, var(--lc) 18%, transparent);
+.garcia-layer.gl-sep { flex: 0 0 1px; background: #0e2216; border: none; padding: 0; }
+.garcia-layer.flash {
+  background: color-mix(in srgb, var(--lc) 20%, #070e09);
+  box-shadow: inset 0 0 18px color-mix(in srgb, var(--lc) 30%, transparent);
 }
-.garcia-layer.active .gl-name { color: var(--lc); }
-.garcia-layer.active .gl-icon {
-  filter: drop-shadow(0 0 6px var(--lc));
-}
-.gl-icon  { font-size: 1.3rem; }
-.gl-name  { font-size: 0.55rem; letter-spacing: 0.12em; color: #1a4a22; font-weight: 700; }
+.garcia-layer.flash .gl-name { color: var(--lc); }
+.garcia-layer.flash .gl-icon { filter: drop-shadow(0 0 8px var(--lc)); }
+.garcia-layer.looping { background: color-mix(in srgb, #ff4488 15%, #070e09); }
+.garcia-layer.looping .gl-name { color: #ff4488; }
+.garcia-layer.looping .gl-icon { filter: drop-shadow(0 0 8px #ff4488); animation: gl-pulse 0.8s ease-in-out infinite; }
+@keyframes gl-pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+.gl-icon  { font-size: 1.2rem; }
+.gl-name  { font-size: 0.5rem; letter-spacing: 0.12em; color: #1a4a22; font-weight: 700; }
 .gl-hint  { font-size: 0.75rem; color: #0f2a18; }
 .garcia-style-name { font-size: 0.48rem; letter-spacing: 0.08em; color: #1e5a2a; text-align: center; min-height: 0.7rem; }
 .garcia-active-target { outline: 1px solid color-mix(in srgb, var(--lc) 40%, transparent); }
@@ -9217,50 +9272,72 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS + "\n" + _G
 
 <div id="garcia-layout">
 
-  <!-- ── Left preset panel ── -->
+  <!-- ── Left panel ── -->
   <div id="garcia-preset">
 
-    <div class="garcia-label">SCALE</div>
-    <select id="garcia-scale-sel" onchange="window.garciaChordSet&&window.garciaChordSet(document.getElementById('garcia-chord-input').value)">
-      <option>C major</option><option>D minor</option><option>G major</option>
-      <option>A minor</option><option>E minor</option><option>F major</option>
-      <option>D Dorian</option><option>A Mixolydian</option>
-    </select>
-
-    <div class="garcia-label">CHORD SEQUENCE</div>
-    <input id="garcia-chord-input" type="text" value="Cmaj7, Am7, Dm7, G7"
-           placeholder="e.g. Dm7, G7, Cmaj7"
-           onchange="window.garciaChordSet&&window.garciaChordSet(this.value)" />
-    <div class="garcia-hint">comma-separated · pinky gesture advances</div>
-
-    <div class="garcia-label">NOW PLAYING</div>
-    <div id="garcia-chord-now" class="garcia-big green">Cmaj7</div>
-
-    <div class="garcia-label">BPM</div>
-    <div id="garcia-bpm-val" class="garcia-big bright">120</div>
-    <input type="range" min="60" max="180" value="120" step="5"
-           oninput="window.garciaBPMSet&&window.garciaBPMSet(this.value)"
-           style="width:100%;margin:4px 0 0;" />
-    <div class="garcia-hint">or tap wrist to set live</div>
-
-    <div class="garcia-label" style="margin-top:16px;">GESTURE GUIDE</div>
-    <div class="garcia-guide">
-      <div><span class="gg-icon">✊</span> Fist &nbsp;→ Drums</div>
-      <div><span class="gg-icon">☝</span> Point → Bass</div>
-      <div><span class="gg-icon">✌</span> Peace → Keys</div>
-      <div><span class="gg-icon">🖖</span> Three → Lead</div>
-      <div><span class="gg-icon">🖐</span> Four &nbsp;→ Pad</div>
-      <div><span class="gg-icon">🖐</span> Palm &nbsp;→ All</div>
-      <div><span class="gg-icon">👍</span> Thumb → BPM ▲</div>
-      <div><span class="gg-icon">🤙</span> Shaka → BPM ▼</div>
+    <!-- Live readout -->
+    <div class="gp-section">
+      <div class="gp-label">NOW PLAYING</div>
+      <div id="gp-now-playing" class="gp-now">—</div>
+      <div id="gp-note-name" class="gp-note-name">—</div>
     </div>
-    <div class="garcia-hint" style="margin-top:6px;">Hold gesture 0.6 s to activate</div>
 
-    <button onclick="window.garciaStop()"
-            style="margin-top:auto;background:#1a2a1a;border:1px solid #1a5c30;color:#66dd99;
-                   padding:8px;cursor:pointer;font-family:monospace;letter-spacing:0.08em;width:100%;">
-      ■ STOP
-    </button>
+    <div class="gp-divider"></div>
+
+    <!-- BPM -->
+    <div class="gp-section">
+      <div class="gp-label">TEMPO</div>
+      <div class="gp-bpm-row">
+        <div id="garcia-bpm-val" class="gp-bpm-num">120</div>
+        <div class="gp-bpm-unit">BPM</div>
+      </div>
+      <input type="range" min="60" max="180" value="120" step="5" id="garcia-bpm-slider"
+             oninput="window.garciaBPMSet&&window.garciaBPMSet(this.value)"
+             style="width:100%;accent-color:#33cc66;margin:4px 0;" />
+      <div class="gp-micro">tap wrist on beat to set live</div>
+    </div>
+
+    <div class="gp-divider"></div>
+
+    <!-- Loop status -->
+    <div class="gp-section">
+      <div class="gp-label">LOOP</div>
+      <div id="gp-loop-status" class="gp-loop-idle">idle</div>
+      <div class="gp-micro">left ✊ fist to lock · again to clear</div>
+    </div>
+
+    <div class="gp-divider"></div>
+
+    <!-- How to play -->
+    <div class="gp-section">
+      <div class="gp-label">HOW TO PLAY</div>
+
+      <div class="gp-how-group">
+        <div class="gp-how-head">🥁 DRUMS — right hand</div>
+        <div class="gp-how-row"><span class="gph-g">✊</span><span class="gph-t">hold fist → kick</span></div>
+        <div class="gp-how-row"><span class="gph-g">👍</span><span class="gph-t">thumb up → snare</span></div>
+        <div class="gp-how-row"><span class="gph-g">☝</span><span class="gph-t">1 finger → hi-hat</span></div>
+        <div class="gp-how-row"><span class="gph-g">✌</span><span class="gph-t">2 fingers → open hat</span></div>
+      </div>
+
+      <div class="gp-how-group" style="margin-top:10px;">
+        <div class="gp-how-head">🎵 DRAW — right hand</div>
+        <div class="gp-how-row"><span class="gph-g">🖖</span><span class="gph-t">3 fingers → lead melody</span></div>
+        <div class="gp-how-row"><span class="gph-g">🖐</span><span class="gph-t">4 fingers → bass</span></div>
+        <div class="gp-how-row"><span class="gph-g">🖐✨</span><span class="gph-t">all+thumb → pad chord</span></div>
+        <div class="gp-micro" style="margin-top:3px;">move hand up/down to change pitch</div>
+      </div>
+
+      <div class="gp-how-group" style="margin-top:10px;">
+        <div class="gp-how-head">🔁 LOOP — left hand</div>
+        <div class="gp-how-row"><span class="gph-g">✊</span><span class="gph-t">fist → lock last 2 bars</span></div>
+        <div class="gp-how-row"><span class="gph-g">✊</span><span class="gph-t">fist again → clear loop</span></div>
+      </div>
+    </div>
+
+    <div style="flex:1"></div>
+
+    <button onclick="window.garciaStop()" class="gp-stop-btn">■ STOP</button>
   </div>
 
   <!-- ── Camera / canvas area ── -->
@@ -9275,40 +9352,18 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS + "\n" + _G
       </div>
     </div>
 
-    <!-- ── Layer indicators ── -->
-    <!-- Gesture legend -->
+    <!-- ── Bottom gesture bar — live state ── -->
     <div id="garcia-layers">
-      <div class="garcia-layer" style="--lc:#ff3333">
-        <div class="gl-icon">✊</div>
-        <div class="gl-name">KICK</div>
-      </div>
-      <div class="garcia-layer" style="--lc:#ff8800">
-        <div class="gl-icon">👍</div>
-        <div class="gl-name">SNARE</div>
-      </div>
-      <div class="garcia-layer" style="--lc:#ffee44">
-        <div class="gl-icon">☝</div>
-        <div class="gl-name">HI-HAT</div>
-      </div>
-      <div class="garcia-layer" style="--lc:#44ffaa">
-        <div class="gl-icon">✌</div>
-        <div class="gl-name">OPEN HH</div>
-      </div>
-      <div class="garcia-layer" style="--lc:#cc88ff">
-        <div class="gl-icon">🖖</div>
-        <div class="gl-name">LEAD</div>
-        <div class="gl-hint" style="font-size:0.5rem;color:#4a2a6a">point to draw</div>
-      </div>
-      <div class="garcia-layer" style="--lc:#44aaff">
-        <div class="gl-icon">🖐</div>
-        <div class="gl-name">BASS</div>
-        <div class="gl-hint" style="font-size:0.5rem;color:#1a3a5a">point to draw</div>
-      </div>
-      <div class="garcia-layer" style="--lc:#ffffff">
-        <div class="gl-icon">🖐✨</div>
-        <div class="gl-name">PAD</div>
-        <div class="gl-hint" style="font-size:0.5rem;color:#3a3a3a">thumb+all</div>
-      </div>
+      <div class="garcia-layer" id="gl-kick"    style="--lc:#ff3333"><div class="gl-icon">✊</div><div class="gl-name">KICK</div></div>
+      <div class="garcia-layer" id="gl-snare"   style="--lc:#ff8800"><div class="gl-icon">👍</div><div class="gl-name">SNARE</div></div>
+      <div class="garcia-layer" id="gl-hihat"   style="--lc:#ffee44"><div class="gl-icon">☝</div><div class="gl-name">HI-HAT</div></div>
+      <div class="garcia-layer" id="gl-openhat" style="--lc:#44ffaa"><div class="gl-icon">✌</div><div class="gl-name">OPEN</div></div>
+      <div class="garcia-layer gl-sep"></div>
+      <div class="garcia-layer" id="gl-lead"    style="--lc:#cc88ff"><div class="gl-icon">🖖</div><div class="gl-name">LEAD</div></div>
+      <div class="garcia-layer" id="gl-bass"    style="--lc:#44aaff"><div class="gl-icon">🖐</div><div class="gl-name">BASS</div></div>
+      <div class="garcia-layer" id="gl-pad"     style="--lc:#ffffff"><div class="gl-icon">🖐✨</div><div class="gl-name">PAD</div></div>
+      <div class="garcia-layer gl-sep"></div>
+      <div class="garcia-layer" id="gl-loop"    style="--lc:#ff4488"><div class="gl-icon">✊</div><div class="gl-name">LOOP</div></div>
     </div>
   </div>
 
