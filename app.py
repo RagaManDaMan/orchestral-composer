@@ -938,20 +938,18 @@ function _styleName(k) {
   return '';
 }
 
-function _swipeStyle(dir) {
-  /* dir: +1 = next, -1 = prev; affects _activeLayer */
-  var k = _activeLayer;
-  if(!_layers.hasOwnProperty(k)) return;
+function _setStyle(k, idx) {
   var n = _styleCount(k);
-  _layers[k].style = (_layers[k].style + dir + n) % n;
-  /* rebuild drum loop immediately so the new pattern plays */
+  _layers[k].style = Math.min(idx, n-1);
   if(k==='drums' && _drumLoop) {
-    _drumLoop.dispose();
-    _drumLoop = null;
-    _buildDrumLoop();
+    _drumLoop.dispose(); _drumLoop=null; _buildDrumLoop();
   }
   _refreshLayers();
 }
+
+/* Finger-count → style index mapping (same order as layer gestures) */
+/* 1=bass, 2=keys, 3=lead, 4=pad — when a layer is locked these become style 0-3 */
+var _FINGER_ORDER = ['bass','keys','lead','pad']; /* index 0=1finger,1=2fingers,... */
 
 function _trigger(layer) {
   if (!layer) return;
@@ -976,8 +974,15 @@ function _trigger(layer) {
     _chordIdx = (_chordIdx+1) % _currentChords.length;
     var el = document.getElementById('garcia-chord-now'); if(el) el.textContent=_currentChords[_chordIdx]||'--';
   } else if (_layers.hasOwnProperty(layer)) {
-    _layers[layer].on = !_layers[layer].on;
-    _activeLayer = layer; /* swipes now target this layer */
+    /* If a different layer is already locked, treat finger count as style pick */
+    var fi = _FINGER_ORDER.indexOf(layer); /* 0..3 for bass/keys/lead/pad */
+    if (_activeLayer && _activeLayer !== layer && fi >= 0) {
+      _setStyle(_activeLayer, fi); /* 1 finger=style 0, 2=style 1, 3=style 2, 4=style 3 */
+    } else {
+      /* Toggle the layer and lock it as the style target */
+      _layers[layer].on = !_layers[layer].on;
+      _activeLayer = layer;
+    }
   }
   _refreshLayers();
 }
@@ -1183,7 +1188,7 @@ function _drawHUD(gesture, W, H) {
   _ctx.textAlign='right';
   _ctx.fillText('▶ '+_activeLayer.toUpperCase()+': '+_styleName(_activeLayer), W-16, 30);
   _ctx.font='12px monospace'; _ctx.fillStyle='#4a8a5a'; _ctx.shadowBlur=0;
-  _ctx.fillText('← swipe wrist → to change style', W-16, 50);
+  _ctx.fillText('show ☝✌🖖🖐 to pick style 1-4', W-16, 50);
   _ctx.textAlign='left';
 
   /* Gesture label — bottom left */
@@ -1232,17 +1237,6 @@ function _onResults(results, ts) {
       if(h===0){
         gesture=g;
         _detectTap(lm[0].y,ts);
-        /* ── Horizontal swipe detection (wrist X) ── */
-        var wx=lm[0].x;
-        if(_lastWristX!==null && _swipeCooldown===0) {
-          var dx=wx-_lastWristX;
-          if(Math.abs(dx)>0.12) {
-            _swipeStyle(dx>0?-1:1); /* mirrored: move right = wrist goes left in raw */
-            _swipeCooldown=25;
-          }
-        }
-        _lastWristX=wx;
-        if(_swipeCooldown>0) _swipeCooldown--;
       }
       _drawSkeleton(lm,g.color,W,H);
     }
