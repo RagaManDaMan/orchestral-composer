@@ -827,8 +827,7 @@ var _REC_MAX_SEC = 8;     /* keep last 8 seconds */
 var _drawNoteOn = null;   /* {note, t, synthKey} while a draw note is held */
 var _loopPart   = null;
 var _looping    = false;
-var _loopBars   = 2;      /* bars to capture on left-fist gesture */
-var _leftCooldown = 0;    /* frames before left fist can fire again */
+var _loopBars   = 2;
 
 /* ── BPM snap ── */
 var _BPMS = [60,65,70,72,75,80,85,90,95,100,105,110,115,120,125,130,140,150,160,170,180];
@@ -930,9 +929,12 @@ function _flashTile(id, dur) {
 function _setLoopUI(on) {
   var el = document.getElementById('gl-loop');
   var st = document.getElementById('gp-loop-status');
+  var btn = document.getElementById('garcia-loop-btn');
   if(el){ el.classList.toggle('looping', on); }
   if(st){ st.className = on ? 'gp-loop-active' : 'gp-loop-idle';
-          st.textContent = on ? '⟳  looping' : 'idle'; }
+          st.textContent = on ? '⟳  looping at '+_currentBPM+' BPM' : 'idle — play something first'; }
+  if(btn){ btn.classList.toggle('gp-loop-btn-active', on);
+           btn.textContent = on ? '■  CLEAR LOOP' : '⟳  LOOP LAST 2 BARS'; }
 }
 function _setNowPlaying(icon, note) {
   var np = document.getElementById('gp-now-playing');
@@ -1239,63 +1241,37 @@ function _onResults(results, ts) {
   var drumGesture=null, drawGesture=null;
   var activeDrawNote = -1;
   var activeDrawSynth = null;
-  var leftFist = false;
 
   if (results.multiHandLandmarks&&results.multiHandLandmarks.length) {
     for (var h=0;h<results.multiHandLandmarks.length;h++) {
       var lm=results.multiHandLandmarks[h];
-      var handLabel = results.multiHandedness&&results.multiHandedness[h]&&
-                      results.multiHandedness[h].label;
-      /* MediaPipe labels from camera's POV: "Right" = user's left in mirror */
-      var isUserRight = (handLabel==='Left');
-      var f=_fingers(lm, isUserRight);
-
-      if(isUserRight) {
-        /* ── RIGHT hand: drums + draw ── */
-        _detectTap(lm[0].y,ts);
-        var dg=_classifyDrum(f);
-        var dw=_classifyDraw(f);
-        if(dg) {
-          _drawSkeleton(lm, dg.color, W, H);
-          drumGesture=dg;
-        } else if(dw) {
-          var fx = 1 - lm[8].x;
-          var fy = lm[8].y;
-          var midi = _yToMidi(fy);
-          if(dw.synth==='bass') midi -= 12;
-          var col = _noteColor(midi);
-          _trail.push({x:fx, y:fy, color:col, age:0});
-          _drawPitchLine(fy, col, _midiToName(midi), W, H);
-          _drawSkeleton(lm, col, W, H);
-          drawGesture=dw; activeDrawNote=midi; activeDrawSynth=dw.synth;
-        } else {
-          _drawSkeleton(lm, '#334433', W, H);
-        }
+      var isRight=results.multiHandedness&&results.multiHandedness[h]&&
+                  results.multiHandedness[h].label==='Right';
+      var f=_fingers(lm, isRight);
+      if(h===0) _detectTap(lm[0].y,ts);
+      var dg=_classifyDrum(f);
+      var dw=_classifyDraw(f);
+      if(dg) {
+        _drawSkeleton(lm, dg.color, W, H);
+        if(!drumGesture) drumGesture=dg;
+      } else if(dw) {
+        var fx = 1 - lm[8].x;
+        var fy = lm[8].y;
+        var midi = _yToMidi(fy);
+        if(dw.synth==='bass') midi -= 12;
+        var col = _noteColor(midi);
+        _trail.push({x:fx, y:fy, color:col, age:0});
+        _drawPitchLine(fy, col, _midiToName(midi), W, H);
+        _drawSkeleton(lm, col, W, H);
+        if(!drawGesture){ drawGesture=dw; activeDrawNote=midi; activeDrawSynth=dw.synth; }
       } else {
-        /* ── LEFT hand: loop control ── */
-        /* Fist = all fingers curled */
-        var allCurled = !f.i&&!f.m&&!f.r&&!f.p&&!f.t;
-        if(allCurled) leftFist=true;
-        var leftCol = _looping ? '#ff4488' : '#4488ff';
-        _drawSkeleton(lm, leftCol, W, H);
-        /* Draw loop-lock indicator near left wrist */
-        var wx=(1-lm[0].x)*W, wy=lm[0].y*H;
-        _ctx.font='bold 14px monospace';
-        _ctx.fillStyle=leftCol; _ctx.shadowColor=leftCol; _ctx.shadowBlur=8;
-        _ctx.fillText(allCurled?(_looping?'● LOOP OFF':'● LOOP'):(_looping?'⟳ LOOPING':'◯ hold fist'), wx-30, wy-14);
-        _ctx.shadowBlur=0;
+        _drawSkeleton(lm, '#334433', W, H);
       }
     }
   } else {
     _lastWristY=null;
   }
 
-  /* ── Left fist → loop toggle (with cooldown) ── */
-  if(_leftCooldown>0) _leftCooldown--;
-  if(leftFist && _leftCooldown===0 && _audioReady) {
-    _lockLoop();
-    _leftCooldown=60; /* ~2s cooldown so one hold doesn't fire repeatedly */
-  }
 
   /* ── Drum hit logic (hold HOLD_FRAMES → fire once, cooldown) ── */
   if(_gestureCooldown>0) _gestureCooldown--;
@@ -1463,6 +1439,11 @@ window.garciaStart = function() {
     clearTimeout(_loadTimeout);
     _bootWhenReady();
   }
+};
+
+window.garciaLoopToggle = function() {
+  if(!_audioReady) return;
+  if(_looping) _clearLoop(); else _lockLoop();
 };
 
 window.garciaStop = function() {
@@ -7285,6 +7266,29 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 .gp-how-row { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
 .gph-g { font-size: 1rem; width: 28px; text-align: center; flex-shrink: 0; }
 .gph-t { font-size: 0.68rem; color: #44aa66; font-family: monospace; line-height: 1.3; }
+.gp-loop-btn {
+  width: 100%;
+  background: #0a1a10;
+  border: 1px solid #1a5c30;
+  color: #33cc66;
+  padding: 10px;
+  cursor: pointer;
+  font-family: monospace;
+  letter-spacing: 0.1em;
+  font-size: 0.82rem;
+  font-weight: 700;
+  border-radius: 3px;
+  transition: background 0.15s, box-shadow 0.15s;
+  margin-bottom: 6px;
+}
+.gp-loop-btn:hover { background: #142a18; box-shadow: 0 0 10px rgba(51,204,102,0.2); }
+.gp-loop-btn-active {
+  background: #2a0a18 !important;
+  border-color: #ff4488 !important;
+  color: #ff4488 !important;
+  box-shadow: 0 0 14px rgba(255,68,136,0.3) !important;
+  animation: gp-loop-blink 1s ease-in-out infinite;
+}
 .gp-stop-btn {
   background: #0a1a10;
   border: 1px solid #1a5c30;
@@ -9299,11 +9303,13 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS + "\n" + _G
 
     <div class="gp-divider"></div>
 
-    <!-- Loop status -->
+    <!-- Loop control -->
     <div class="gp-section">
       <div class="gp-label">LOOP</div>
-      <div id="gp-loop-status" class="gp-loop-idle">idle</div>
-      <div class="gp-micro">left ✊ fist to lock · again to clear</div>
+      <button id="garcia-loop-btn" onclick="window.garciaLoopToggle()" class="gp-loop-btn">
+        ⟳ &nbsp;LOOP LAST 2 BARS
+      </button>
+      <div id="gp-loop-status" class="gp-loop-idle">idle — play something first</div>
     </div>
 
     <div class="gp-divider"></div>
@@ -9329,9 +9335,8 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS + "\n" + _G
       </div>
 
       <div class="gp-how-group" style="margin-top:10px;">
-        <div class="gp-how-head">🔁 LOOP — left hand</div>
-        <div class="gp-how-row"><span class="gph-g">✊</span><span class="gph-t">fist → lock last 2 bars</span></div>
-        <div class="gp-how-row"><span class="gph-g">✊</span><span class="gph-t">fist again → clear loop</span></div>
+        <div class="gp-how-head">🔁 LOOP — button</div>
+        <div class="gp-micro">click ⟳ LOOP to capture last 2 bars<br>click again to clear</div>
       </div>
     </div>
 
