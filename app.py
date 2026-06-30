@@ -788,6 +788,14 @@ _GARCIA_JS = r"""
    ═══════════════════════════════════════════════════════════════════════ */
 (function(){
 
+/* Pre-load Tone.js at page-load time so it's ready before the user clicks */
+(function(){
+  if(window.Tone) return;
+  var s=document.createElement('script');
+  s.src='https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js';
+  document.head.appendChild(s);
+})();
+
 /* ── State ── */
 var _video, _canvas, _ctx;
 var _hands, _camera;
@@ -994,19 +1002,13 @@ function _buildAudio() {
     envelope:{attack:1.0,decay:0.2,sustain:0.9,release:2.5}}).toDestination();
   _padSynth.volume.value = -14;
 
-  var _dp = [
-    {time:'0:0:0',note:36,v:0.9},{time:'0:1:0',note:38,v:0.82},
-    {time:'0:2:0',note:36,v:0.85},{time:'0:2:2',note:36,v:0.55},
-    {time:'0:3:0',note:38,v:0.82},
-    {time:'0:0:0',note:42,v:0.5},{time:'0:0:2',note:42,v:0.32},
-    {time:'0:1:0',note:42,v:0.48},{time:'0:1:2',note:42,v:0.30},
-    {time:'0:2:0',note:42,v:0.48},{time:'0:2:2',note:42,v:0.28},
-    {time:'0:3:0',note:42,v:0.48},{time:'0:3:2',note:42,v:0.28},
-  ];
-  _drumLoop = new Tone.Part(function(time,ev){
-    if(_layers.drums) _garciaDrumHit(ev.note,time,ev.v);
-  }, _dp);
-  _drumLoop.loop=true; _drumLoop.loopEnd='1m'; _drumLoop.start(0);
+  /* 8-step pattern: kick(36) snare(38) hihat(42) open(46)
+     Steps: K  hh  S  hh  K  hh  S  hh  (classic 4/4) */
+  _drumLoop = new Tone.Sequence(function(time, note){
+    if(!_layers.drums) return;
+    _garciaDrumHit(note, time, note===36?0.9:note===38?0.82:0.45);
+  }, [36,42,38,42,36,42,38,46], '8n');
+  _drumLoop.start(0);
 
   _bassLoop = new Tone.Sequence(function(time){
     if(!_layers.bass||!_bassSynth) return;
@@ -1030,21 +1032,15 @@ function _buildAudio() {
   Tone.Transport.start();
 }
 
-/* ── Audio init: load Tone.js if absent, then start AudioContext ── */
+/* ── Audio init: called from button click (synchronous user-gesture context) ── */
 function _initAudio() {
   if(_audioReady) return;
+  if(!window.Tone) { console.warn('GarSIa: Tone.js not loaded yet'); return; }
   _audioReady = true;
-  function _go() {
-    Tone.start().then(function(){ _buildAudio(); })
-                .catch(function(e){ console.error('GarSIa Tone.start failed',e); });
-  }
-  if(window.Tone) { _go(); return; }
-  /* Tone.js not on page yet (user hasn't opened a MIDI player) — load it now */
-  var s=document.createElement('script');
-  s.src='https://cdn.jsdelivr.net/npm/tone@14.7.77/build/Tone.js';
-  s.onload=_go;
-  s.onerror=function(){ console.error('GarSIa: failed to load Tone.js'); };
-  document.head.appendChild(s);
+  /* Tone.start() / AudioContext.resume() MUST be called synchronously from
+     a user-gesture handler — Promise callbacks are too late for browser policy */
+  Tone.start();
+  _buildAudio();
 }
 
 /* ── Canvas drawing ── */
@@ -1171,6 +1167,9 @@ function _loadScript(src,cb) {
 /* ── Public API ── */
 window.garciaStart = function() {
   if (_running) return;
+  /* ↓ Must be FIRST — AudioContext.resume() requires synchronous user-gesture context */
+  _initAudio();
+
   var btn=document.getElementById('garcia-start-btn');
   var status=document.getElementById('garcia-status');
   if(btn){btn.textContent='Starting…';btn.disabled=true;}
@@ -1202,7 +1201,6 @@ window.garciaStart = function() {
       if(btn){btn.style.display='none';}
       var ov=document.getElementById('garcia-start-overlay'); if(ov) ov.style.display='none';
       if(status) status.textContent='✓ Camera live — show a hand to begin';
-      _initAudio();
     }).catch(function(e){
       if(status) status.textContent='✗ Camera error: '+e.message+' (allow camera in browser)';
       if(btn){btn.textContent='► Start Camera';btn.disabled=false;}
