@@ -811,8 +811,10 @@ var _tapFlash = 0;
 var _currentGesture = null;
 var _prevGestureName = null;
 var _gestureHoldFrames = 0;
-var HOLD_FRAMES = 18;  /* ~600 ms at 30 fps */
+var HOLD_FRAMES = 4;   /* ~130 ms at 30 fps — fast enough for live use */
 var _holdProgress = 0;
+var _gestureCooldown = 0;  /* frames to ignore after a trigger, prevents double-fire */
+var COOLDOWN_FRAMES = 30;  /* ~1 second cooldown per trigger */
 
 var _layers = {drums:false, bass:false, keys:false, lead:false, pad:false};
 
@@ -1144,10 +1146,15 @@ function _onResults(results, ts) {
   }
 
   /* Hold gesture logic */
+  if(_gestureCooldown>0) _gestureCooldown--;
   if (gesture&&gesture.name!=='--') {
     if (gesture.name===_prevGestureName) _gestureHoldFrames++;
-    else _gestureHoldFrames=0;
-    if (_gestureHoldFrames===HOLD_FRAMES) { _trigger(gesture.layer); _gestureHoldFrames=0; }
+    else { _gestureHoldFrames=0; }
+    if (_gestureHoldFrames===HOLD_FRAMES && _gestureCooldown===0) {
+      _trigger(gesture.layer);
+      _gestureHoldFrames=0;
+      _gestureCooldown=COOLDOWN_FRAMES;
+    }
     _holdProgress=Math.min(1,_gestureHoldFrames/HOLD_FRAMES);
   } else {
     _gestureHoldFrames=0; _holdProgress=0;
