@@ -802,13 +802,21 @@ var _hands, _camera;
 var _running = false;
 
 /* BPM */
-var _bpmHistory=[], _currentBPM=120, _lastTapTime=0;
-var _lastWristY=null, _tapCooldown=0, _tapFlash=0;
+var _bpmHistory=[], _currentBPM=120, _lastTapTime=0, _tapFlash=0;
 
-/* Gesture hold */
-var _currentGesture=null, _prevGestureName=null;
-var _gestureHoldFrames=0, _holdProgress=0;
+/* Fist-tap: fires on fist-close transition */
+var _prevWasFist = false;
+
+/* Drum gesture hold */
+var _prevGestureName=null, _gestureHoldFrames=0, _holdProgress=0;
 var HOLD_FRAMES=4, _gestureCooldown=0, COOLDOWN_FRAMES=30;
+
+/* Open-palm loop gesture hold */
+var _palmHoldFrames=0, _palmCooldown=0;
+var PALM_HOLD_FRAMES=15; /* ~0.5s at 30fps */
+
+/* Metronome */
+var _metroOn=true, _metroBeat=0;
 
 /* Draw-mode trail */
 var _trail = [];          /* [{x,y,color,age}] */
@@ -857,12 +865,11 @@ var _DRUM_G = [
 ];
 
 /* ── Draw-mode gesture table ── */
-/* These produce continuous pitched sound while held */
 var _DRAW_G = [
   {t:0,i:1,m:1,r:1,p:0, name:'Lead',  synth:'lead', color:'#cc88ff', icon:'🖖'},
   {t:0,i:1,m:1,r:1,p:1, name:'Bass',  synth:'bass', color:'#44aaff', icon:'🖐'},
-  {t:1,i:1,m:1,r:1,p:1, name:'Pad',   synth:'pad',  color:'#ffffff', icon:'🖐✨'},
 ];
+/* Open palm (thumb+all) = loop trigger — NOT in draw table */
 
 function _classifyDrum(f) {
   for(var i=0;i<_DRUM_G.length;i++){
@@ -1000,36 +1007,30 @@ function _clearLoop() {
   _setLoopUI(false);
 }
 
-/* ── Wrist tap → BPM ── */
-function _detectTap(wristY, ts) {
-  if (_lastWristY === null) { _lastWristY = wristY; return; }
-  var dy = (wristY - _lastWristY) * 10;
-  _lastWristY = wristY;
-  if (dy > 0.14 && _tapCooldown <= 0) {
+/* ── Fist-onset tap → BPM ── */
+/* Called every frame with whether a fist is currently detected */
+function _handleFistTap(isFist, ts) {
+  /* Fire on the frame the fist first closes (onset), not while held */
+  if(isFist && !_prevWasFist) {
     var interval = (ts - _lastTapTime) / 1000;
-    if (_lastTapTime > 0 && interval > 0.2 && interval < 2.5) {
+    if(_lastTapTime > 0 && interval > 0.18 && interval < 2.5) {
       _bpmHistory.push(60 / interval);
-      if (_bpmHistory.length > 8) _bpmHistory.shift();
-      if (_bpmHistory.length >= 2) {
+      if(_bpmHistory.length > 6) _bpmHistory.shift();
+      if(_bpmHistory.length >= 2) {
         var sorted = _bpmHistory.slice().sort(function(a,b){return a-b;});
         var median = sorted[Math.floor(sorted.length/2)];
         var snapped = _snapBPM(Math.round(median));
-        if (snapped !== _currentBPM) {
-          _currentBPM = snapped;
-          if (window.Tone) Tone.Transport.bpm.rampTo(_currentBPM, 0.1);
-          var el = document.getElementById('garcia-bpm-val');
-          if (el) el.textContent = _currentBPM;
-          var sl = document.getElementById('garcia-bpm-slider');
-          if (sl) sl.value = _currentBPM;
-        }
+        _currentBPM = snapped;
+        if(window.Tone) Tone.Transport.bpm.rampTo(_currentBPM, 0.08);
+        var el = document.getElementById('garcia-bpm-val'); if(el) el.textContent=_currentBPM;
+        var sl = document.getElementById('garcia-bpm-slider'); if(sl) sl.value=_currentBPM;
       }
     }
     _lastTapTime = ts;
-    _tapCooldown = 12;
-    _tapFlash = 8;
+    _tapFlash = 10;
   }
-  if (_tapCooldown > 0) _tapCooldown--;
-  if (_tapFlash > 0)    _tapFlash--;
+  _prevWasFist = isFist;
+  if(_tapFlash>0) _tapFlash--;
 }
 
 /* ── Self-contained drum synth (mirrors _DRUM_SYNTH_JS but scoped to GarSIa) ── */
@@ -1092,6 +1093,20 @@ function _buildAudio() {
     envelope:{attack:0.8,decay:0.2,sustain:0.9,release:2.0}
   }).toDestination();
   _padSynth.volume.value = -14;
+
+  /* Metronome click — scheduled on every beat */
+  Tone.Transport.scheduleRepeat(function(time){
+    if(!_metroOn) return;
+    var ctx=Tone.getContext().rawContext;
+    var osc=ctx.createOscillator();
+    var g=ctx.createGain();
+    osc.frequency.value=(_metroBeat===0)?1400:1000;
+    _metroBeat=(_metroBeat+1)%4;
+    g.gain.setValueAtTime(0.28,time);
+    g.gain.exponentialRampToValueAtTime(0.001,time+0.045);
+    osc.connect(g); g.connect(ctx.destination);
+    osc.start(time); osc.stop(time+0.05);
+  }, '4n');
 
   Tone.Transport.start();
 }
@@ -1167,12 +1182,15 @@ function _drawPitchLine(y, color, label, W, H) {
 }
 
 function _drawHUD(drumGesture, drawGesture, W, H) {
-  /* BPM — top left */
+  /* BPM — top left, flashes white on fist tap */
   var bpmCol = _tapFlash>0 ? '#ffffff' : '#33cc66';
   _ctx.font='bold 36px monospace';
-  _ctx.fillStyle=bpmCol; _ctx.shadowColor=bpmCol; _ctx.shadowBlur=_tapFlash>0?22:8;
-  _ctx.fillText('♪ '+_currentBPM, 18, 46);
+  _ctx.fillStyle=bpmCol; _ctx.shadowColor=bpmCol; _ctx.shadowBlur=_tapFlash>0?24:8;
+  _ctx.fillText('♩ '+_currentBPM, 18, 46);
   _ctx.shadowBlur=0;
+  /* Metro on/off indicator */
+  _ctx.font='11px monospace'; _ctx.fillStyle=_metroOn?'#33cc66':'#1a4a22';
+  _ctx.fillText(_metroOn?'● METRO':'○ METRO', 18, 62);
 
   /* Hold ring — for drum gestures */
   if (_holdProgress>0 && drumGesture) {
@@ -1209,17 +1227,23 @@ function _drawHUD(drumGesture, drawGesture, W, H) {
     _ctx.textAlign='left'; _ctx.shadowBlur=0;
   }
 
-  /* Beat dots */
-  if (window.Tone && Tone.Transport) {
+  /* Beat dots — pulse on each metro beat */
+  if(window.Tone&&Tone.Transport) {
     try {
-      var beat = parseInt(Tone.Transport.position.split(':')[1])||0;
-      for (var i=0;i<4;i++) {
-        var active=(i===beat%4);
-        _ctx.beginPath(); _ctx.arc(W-112+i*28, H-22, active?8:5, 0, Math.PI*2);
-        _ctx.fillStyle=active?'#33cc66':'#1a4a2a'; _ctx.fill();
+      var beat=parseInt(Tone.Transport.position.split(':')[1])||0;
+      for(var i=0;i<4;i++){
+        var isThis=(i===beat%4);
+        var r=isThis?10:5;
+        _ctx.beginPath(); _ctx.arc(W-130+i*34,H-22,r,0,Math.PI*2);
+        _ctx.fillStyle=isThis?(_metroOn?'#33cc66':'#224422'):'#112211';
+        if(isThis&&_metroOn){_ctx.shadowColor='#33cc66';_ctx.shadowBlur=16;}
+        _ctx.fill(); _ctx.shadowBlur=0;
       }
     } catch(e){}
   }
+  _ctx.font='9px monospace'; _ctx.fillStyle='#1a3a22'; _ctx.textAlign='right';
+  _ctx.fillText('✊ tap to set BPM  ·  🖐 hold palm to loop', W-10, H-6);
+  _ctx.textAlign='left';
 }
 
 function _onResults(results, ts) {
@@ -1239,37 +1263,70 @@ function _onResults(results, ts) {
   _drawTrailFn(W, H);
 
   var drumGesture=null, drawGesture=null;
-  var activeDrawNote = -1;
-  var activeDrawSynth = null;
+  var activeDrawNote=-1, activeDrawSynth=null;
+  var anyOpenPalm=false;
 
-  if (results.multiHandLandmarks&&results.multiHandLandmarks.length) {
-    for (var h=0;h<results.multiHandLandmarks.length;h++) {
+  if(results.multiHandLandmarks&&results.multiHandLandmarks.length) {
+    for(var h=0;h<results.multiHandLandmarks.length;h++) {
       var lm=results.multiHandLandmarks[h];
       var isRight=results.multiHandedness&&results.multiHandedness[h]&&
                   results.multiHandedness[h].label==='Right';
-      var f=_fingers(lm, isRight);
-      if(h===0) _detectTap(lm[0].y,ts);
+      var f=_fingers(lm,isRight);
+
+      /* Open palm = all 5 fingers extended */
+      var openPalm = f.t&&f.i&&f.m&&f.r&&f.p;
+      if(openPalm) {
+        anyOpenPalm=true;
+        var palmPct = Math.min(1, _palmHoldFrames/PALM_HOLD_FRAMES);
+        _drawSkeleton(lm, _looping?'#ff4488':'#44ff99', W, H);
+        /* Arc progress ring around wrist */
+        var wx=(1-lm[0].x)*W, wy=lm[0].y*H;
+        _ctx.beginPath();
+        _ctx.arc(wx,wy,28,-Math.PI/2,-Math.PI/2+palmPct*Math.PI*2);
+        _ctx.strokeStyle=_looping?'#ff4488':'#44ff99'; _ctx.lineWidth=4;
+        _ctx.shadowColor=_looping?'#ff4488':'#44ff99'; _ctx.shadowBlur=12; _ctx.stroke();
+        _ctx.shadowBlur=0;
+        _ctx.font='bold 12px monospace';
+        _ctx.fillStyle=_looping?'#ff4488':'#44ff99'; _ctx.textAlign='center';
+        _ctx.fillText(_looping?'release loop':'lock loop', wx, wy-34);
+        _ctx.textAlign='left';
+        continue; /* don't process as drum/draw */
+      }
+
       var dg=_classifyDrum(f);
       var dw=_classifyDraw(f);
       if(dg) {
         _drawSkeleton(lm, dg.color, W, H);
         if(!drumGesture) drumGesture=dg;
       } else if(dw) {
-        var fx = 1 - lm[8].x;
-        var fy = lm[8].y;
-        var midi = _yToMidi(fy);
-        if(dw.synth==='bass') midi -= 12;
-        var col = _noteColor(midi);
-        _trail.push({x:fx, y:fy, color:col, age:0});
-        _drawPitchLine(fy, col, _midiToName(midi), W, H);
-        _drawSkeleton(lm, col, W, H);
-        if(!drawGesture){ drawGesture=dw; activeDrawNote=midi; activeDrawSynth=dw.synth; }
+        var fx=1-lm[8].x, fy=lm[8].y;
+        var midi=_yToMidi(fy);
+        if(dw.synth==='bass') midi-=12;
+        var col=_noteColor(midi);
+        _trail.push({x:fx,y:fy,color:col,age:0});
+        _drawPitchLine(fy,col,_midiToName(midi),W,H);
+        _drawSkeleton(lm,col,W,H);
+        if(!drawGesture){drawGesture=dw;activeDrawNote=midi;activeDrawSynth=dw.synth;}
       } else {
-        _drawSkeleton(lm, '#334433', W, H);
+        _drawSkeleton(lm,'#334433',W,H);
       }
     }
+  }
+
+  /* Fist-tap BPM: uses primary drum gesture */
+  _handleFistTap(!!(drumGesture&&drumGesture.note===36), ts);
+
+  /* Open-palm loop hold logic */
+  if(_palmCooldown>0) _palmCooldown--;
+  if(anyOpenPalm) {
+    _palmHoldFrames++;
+    if(_palmHoldFrames>=PALM_HOLD_FRAMES && _palmCooldown===0) {
+      if(_looping) _clearLoop(); else _lockLoop();
+      _palmHoldFrames=0;
+      _palmCooldown=60; /* 2s before can retrigger */
+    }
   } else {
-    _lastWristY=null;
+    _palmHoldFrames=0;
   }
 
 
@@ -1444,6 +1501,14 @@ window.garciaStart = function() {
 window.garciaLoopToggle = function() {
   if(!_audioReady) return;
   if(_looping) _clearLoop(); else _lockLoop();
+};
+
+window.garciaMetroToggle = function() {
+  _metroOn = !_metroOn;
+  _metroBeat = 0;
+  var btn = document.getElementById('garcia-metro-btn');
+  if(btn){ btn.textContent = _metroOn ? '● METRO ON' : '○ METRO OFF';
+           btn.classList.toggle('gp-metro-off', !_metroOn); }
 };
 
 window.garciaStop = function() {
@@ -7266,6 +7331,22 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 .gp-how-row { display: flex; align-items: center; gap: 6px; margin-bottom: 2px; }
 .gph-g { font-size: 1rem; width: 28px; text-align: center; flex-shrink: 0; }
 .gph-t { font-size: 0.68rem; color: #44aa66; font-family: monospace; line-height: 1.3; }
+.gp-metro-btn {
+  background: #0a1a10;
+  border: 1px solid #1a5c30;
+  color: #33cc66;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-family: monospace;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  border-radius: 2px;
+  margin-left: auto;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.gp-metro-btn:hover { background: #142a18; }
+.gp-metro-off { color: #1a5c30 !important; border-color: #0e2a18 !important; }
 .gp-loop-btn {
   width: 100%;
   background: #0a1a10;
@@ -9288,17 +9369,18 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS + "\n" + _G
 
     <div class="gp-divider"></div>
 
-    <!-- BPM -->
+    <!-- BPM + Metro -->
     <div class="gp-section">
       <div class="gp-label">TEMPO</div>
       <div class="gp-bpm-row">
         <div id="garcia-bpm-val" class="gp-bpm-num">120</div>
         <div class="gp-bpm-unit">BPM</div>
+        <button id="garcia-metro-btn" onclick="window.garciaMetroToggle()" class="gp-metro-btn">● METRO ON</button>
       </div>
-      <input type="range" min="60" max="180" value="120" step="5" id="garcia-bpm-slider"
+      <input type="range" min="40" max="200" value="120" step="1" id="garcia-bpm-slider"
              oninput="window.garciaBPMSet&&window.garciaBPMSet(this.value)"
              style="width:100%;accent-color:#33cc66;margin:4px 0;" />
-      <div class="gp-micro">tap wrist on beat to set live</div>
+      <div class="gp-micro">✊ close fist on each beat to tap tempo</div>
     </div>
 
     <div class="gp-divider"></div>
@@ -9309,7 +9391,8 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS + "\n" + _G
       <button id="garcia-loop-btn" onclick="window.garciaLoopToggle()" class="gp-loop-btn">
         ⟳ &nbsp;LOOP LAST 2 BARS
       </button>
-      <div id="gp-loop-status" class="gp-loop-idle">idle — play something first</div>
+      <div id="gp-loop-status" class="gp-loop-idle">idle</div>
+      <div class="gp-micro">or hold open palm 🖐 in camera</div>
     </div>
 
     <div class="gp-divider"></div>
@@ -9319,24 +9402,29 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS + "\n" + _G
       <div class="gp-label">HOW TO PLAY</div>
 
       <div class="gp-how-group">
-        <div class="gp-how-head">🥁 DRUMS — right hand</div>
-        <div class="gp-how-row"><span class="gph-g">✊</span><span class="gph-t">hold fist → kick</span></div>
+        <div class="gp-how-head">🎛 TEMPO</div>
+        <div class="gp-how-row"><span class="gph-g">✊</span><span class="gph-t">tap fist on each beat → sets BPM</span></div>
+        <div class="gp-micro" style="margin-top:2px;">tap 3-4 times, BPM snaps automatically</div>
+      </div>
+
+      <div class="gp-how-group" style="margin-top:10px;">
+        <div class="gp-how-head">🥁 DRUMS — hold gesture</div>
+        <div class="gp-how-row"><span class="gph-g">✊</span><span class="gph-t">fist → kick drum</span></div>
         <div class="gp-how-row"><span class="gph-g">👍</span><span class="gph-t">thumb up → snare</span></div>
         <div class="gp-how-row"><span class="gph-g">☝</span><span class="gph-t">1 finger → hi-hat</span></div>
         <div class="gp-how-row"><span class="gph-g">✌</span><span class="gph-t">2 fingers → open hat</span></div>
       </div>
 
       <div class="gp-how-group" style="margin-top:10px;">
-        <div class="gp-how-head">🎵 DRAW — right hand</div>
-        <div class="gp-how-row"><span class="gph-g">🖖</span><span class="gph-t">3 fingers → lead melody</span></div>
+        <div class="gp-how-head">🎵 MELODY — point &amp; move</div>
+        <div class="gp-how-row"><span class="gph-g">🖖</span><span class="gph-t">3 fingers → lead (up=high)</span></div>
         <div class="gp-how-row"><span class="gph-g">🖐</span><span class="gph-t">4 fingers → bass</span></div>
-        <div class="gp-how-row"><span class="gph-g">🖐✨</span><span class="gph-t">all+thumb → pad chord</span></div>
-        <div class="gp-micro" style="margin-top:3px;">move hand up/down to change pitch</div>
       </div>
 
       <div class="gp-how-group" style="margin-top:10px;">
-        <div class="gp-how-head">🔁 LOOP — button</div>
-        <div class="gp-micro">click ⟳ LOOP to capture last 2 bars<br>click again to clear</div>
+        <div class="gp-how-head">🔁 LOOP</div>
+        <div class="gp-how-row"><span class="gph-g">🖐✨</span><span class="gph-t">open palm → hold 0.5s to lock</span></div>
+        <div class="gp-micro" style="margin-top:2px;">or click the button above</div>
       </div>
     </div>
 
