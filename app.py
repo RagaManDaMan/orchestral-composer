@@ -784,11 +784,11 @@ _DRUM_SYNTH_JS = r"""
 
 _GARCIA_JS = r"""
 /* ═══════════════════════════════════════════════════════════════════════
-   GarSIa — Gesture Live Looper
+   GarSIa — Gesture Live Looper  v2
    ═══════════════════════════════════════════════════════════════════════ */
 (function(){
 
-/* Pre-load Tone.js at page-load time so it's ready before the user clicks */
+/* Pre-load Tone.js at page-load so it's ready before first click */
 (function(){
   if(window.Tone) return;
   var s=document.createElement('script');
@@ -801,22 +801,25 @@ var _video, _canvas, _ctx;
 var _hands, _camera;
 var _running = false;
 
-var _bpmHistory = [];
-var _currentBPM = 120;
-var _lastTapTime = 0;
-var _lastWristY = null;
-var _tapCooldown = 0;
-var _tapFlash = 0;
+/* BPM */
+var _bpmHistory=[], _currentBPM=120, _lastTapTime=0;
+var _lastWristY=null, _tapCooldown=0, _tapFlash=0;
 
-var _currentGesture = null;
-var _prevGestureName = null;
-var _gestureHoldFrames = 0;
-var HOLD_FRAMES = 4;   /* ~130 ms at 30 fps — fast enough for live use */
-var _holdProgress = 0;
-var _gestureCooldown = 0;  /* frames to ignore after a trigger, prevents double-fire */
-var COOLDOWN_FRAMES = 30;  /* ~1 second cooldown per trigger */
+/* Swipe */
+var _lastWristX=null, _swipeCooldown=0;
 
-var _layers = {drums:false, bass:false, keys:false, lead:false, pad:false};
+/* Gesture */
+var _currentGesture=null, _prevGestureName=null;
+var _gestureHoldFrames=0, _holdProgress=0;
+var HOLD_FRAMES=4, _gestureCooldown=0, COOLDOWN_FRAMES=30;
+
+/* Layers: each has on/off + style index */
+var _layers = {
+  drums: {on:false, style:0},
+  bass:  {on:false, style:0},
+  keys:  {on:false, style:0},
+  pad:   {on:false, style:0},
+};
 
 /* Audio objects */
 var _audioReady = false;
@@ -831,6 +834,21 @@ var _padLoop   = null;
 /* Chord preset */
 var _currentChords = ['Cmaj7','Am7','Dm7','G7'];
 var _chordIdx = 0;
+
+/* ── Pattern / style libraries ── */
+var _DRUM_PATTERNS = [
+  {name:'Basic 4/4', steps:[36,42,38,42, 36,42,38,46]},
+  {name:'Funk',      steps:[36,42,36,42, 38,42,36,42]},
+  {name:'Jazz',      steps:[42,42,42,46, 38,42,42,46]},
+  {name:'Half-time', steps:[36,42,42,42, 38,42,42,42]},
+  {name:'Latin',     steps:[36,42,38,42, 36,46,38,42]},
+];
+var _BASS_STYLES = ['Root','Walking','Syncopated'];
+var _KEYS_STYLES = ['Block','Arpeggio','Comping'];
+var _PAD_STYLES  = ['Whole','Half','Swell'];
+
+/* active swipe target */
+var _activeLayer = 'drums'; /* which layer swipe gesture affects */
 
 /* ── BPM snap ── */
 var _BPMS = [60,65,70,72,75,80,85,90,95,100,105,110,115,120,125,130,140,150,160,170,180];
@@ -905,11 +923,41 @@ function _detectTap(wristY, ts) {
 }
 
 /* ── Actions ── */
+function _styleCount(k) {
+  if(k==='drums') return _DRUM_PATTERNS.length;
+  if(k==='bass')  return _BASS_STYLES.length;
+  if(k==='keys')  return _KEYS_STYLES.length;
+  if(k==='pad')   return _PAD_STYLES.length;
+  return 1;
+}
+function _styleName(k) {
+  if(k==='drums') return _DRUM_PATTERNS[_layers.drums.style].name;
+  if(k==='bass')  return _BASS_STYLES[_layers.bass.style];
+  if(k==='keys')  return _KEYS_STYLES[_layers.keys.style];
+  if(k==='pad')   return _PAD_STYLES[_layers.pad.style];
+  return '';
+}
+
+function _swipeStyle(dir) {
+  /* dir: +1 = next, -1 = prev; affects _activeLayer */
+  var k = _activeLayer;
+  if(!_layers.hasOwnProperty(k)) return;
+  var n = _styleCount(k);
+  _layers[k].style = (_layers[k].style + dir + n) % n;
+  /* rebuild drum loop immediately so the new pattern plays */
+  if(k==='drums' && _drumLoop) {
+    _drumLoop.dispose();
+    _drumLoop = null;
+    _buildDrumLoop();
+  }
+  _refreshLayers();
+}
+
 function _trigger(layer) {
   if (!layer) return;
   if (layer === 'all') {
-    var anyOn = Object.keys(_layers).some(function(k){return _layers[k];});
-    Object.keys(_layers).forEach(function(k){ _layers[k]=!anyOn; });
+    var anyOn = Object.keys(_layers).some(function(k){return _layers[k].on;});
+    Object.keys(_layers).forEach(function(k){ _layers[k].on=!anyOn; });
   } else if (layer === 'bpm_up') {
     var idx = _BPMS.indexOf(_currentBPM);
     if (idx < _BPMS.length-1) {
@@ -928,7 +976,8 @@ function _trigger(layer) {
     _chordIdx = (_chordIdx+1) % _currentChords.length;
     var el = document.getElementById('garcia-chord-now'); if(el) el.textContent=_currentChords[_chordIdx]||'--';
   } else if (_layers.hasOwnProperty(layer)) {
-    _layers[layer] = !_layers[layer];
+    _layers[layer].on = !_layers[layer].on;
+    _activeLayer = layer; /* swipes now target this layer */
   }
   _refreshLayers();
 }
@@ -936,7 +985,11 @@ function _trigger(layer) {
 function _refreshLayers() {
   Object.keys(_layers).forEach(function(k) {
     var el = document.getElementById('garcia-layer-'+k);
-    if (el) el.classList.toggle('active', _layers[k]);
+    if (!el) return;
+    el.classList.toggle('active', _layers[k].on);
+    var sn = el.querySelector('.garcia-style-name');
+    if(sn) sn.textContent = _styleName(k);
+    el.classList.toggle('garcia-active-target', k===_activeLayer);
   });
 }
 
@@ -987,6 +1040,16 @@ function _garciaDrumHit(note,t,v){
   else if(note===46) _garciaHihat(t,v,true);
 }
 
+/* ── Drum loop builder (swappable pattern) ── */
+function _buildDrumLoop() {
+  var pat = _DRUM_PATTERNS[_layers.drums.style].steps;
+  _drumLoop = new Tone.Sequence(function(time, note){
+    if(!_layers.drums.on) return;
+    _garciaDrumHit(note, time, note===36?0.9:note===38?0.82:0.45);
+  }, pat, '8n');
+  _drumLoop.start(0);
+}
+
 /* ── Audio init (called after Tone.start() resolves) ── */
 function _buildAudio() {
   Tone.Transport.bpm.value = _currentBPM;
@@ -1004,30 +1067,49 @@ function _buildAudio() {
     envelope:{attack:1.0,decay:0.2,sustain:0.9,release:2.5}}).toDestination();
   _padSynth.volume.value = -14;
 
-  /* 8-step pattern: kick(36) snare(38) hihat(42) open(46)
-     Steps: K  hh  S  hh  K  hh  S  hh  (classic 4/4) */
-  _drumLoop = new Tone.Sequence(function(time, note){
-    if(!_layers.drums) return;
-    _garciaDrumHit(note, time, note===36?0.9:note===38?0.82:0.45);
-  }, [36,42,38,42,36,42,38,46], '8n');
-  _drumLoop.start(0);
+  _buildDrumLoop();
 
-  _bassLoop = new Tone.Sequence(function(time){
-    if(!_layers.bass||!_bassSynth) return;
-    var rm=(_currentChords[_chordIdx]||'C').match(/^([A-G][#b]?)/);
-    if(rm) _bassSynth.triggerAttackRelease(rm[1]+'2','8n',time,0.7);
-  },[0,null,2,null],'4n');
+  _bassLoop = new Tone.Sequence(function(time, step){
+    if(!_layers.bass.on||!_bassSynth) return;
+    var ch = _currentChords[_chordIdx]||'C';
+    var rm = ch.match(/^([A-G][#b]?)/); if(!rm) return;
+    var root = rm[1];
+    var style = _layers.bass.style;
+    if(style===0){ /* Root: root on 1, root on 3 */
+      if(step===0||step===2) _bassSynth.triggerAttackRelease(root+'2','8n',time,0.7);
+    } else if(style===1){ /* Walking: root, 3rd, 5th, 7th down */
+      var ns2=_chordNotes(ch,2);
+      _bassSynth.triggerAttackRelease(ns2[step%ns2.length]||root+'2','8n',time,0.65);
+    } else { /* Syncopated: hits on 0,1,3 */
+      if(step===0||step===1||step===3) _bassSynth.triggerAttackRelease(root+'2','16n',time,0.75);
+    }
+  },[0,1,2,3],'4n');
   _bassLoop.start(0);
 
   _keysLoop = new Tone.Loop(function(time){
-    if(!_layers.keys||!_keysSynth) return;
-    _keysSynth.triggerAttackRelease(_chordNotes(_currentChords[_chordIdx]||'C',4),'2n',time,0.45);
+    if(!_layers.keys.on||!_keysSynth) return;
+    var ch = _currentChords[_chordIdx]||'C';
+    var style = _layers.keys.style;
+    if(style===0){ /* Block chord */
+      _keysSynth.triggerAttackRelease(_chordNotes(ch,4),'2n',time,0.45);
+    } else if(style===1){ /* Arpeggio — schedule each note offset */
+      var ns2=_chordNotes(ch,4);
+      ns2.forEach(function(n,i){
+        _keysSynth.triggerAttackRelease(n,'8n',time+Tone.Time('8n').toSeconds()*i,0.4);
+      });
+    } else { /* Comping — offbeat */
+      _keysSynth.triggerAttackRelease(_chordNotes(ch,4),'8n',time+Tone.Time('8n').toSeconds(),0.38);
+    }
   },'1m');
   _keysLoop.start(0);
 
   _padLoop = new Tone.Loop(function(time){
-    if(!_layers.pad||!_padSynth) return;
-    _padSynth.triggerAttackRelease(_chordNotes(_currentChords[_chordIdx]||'C',3),'2m',time,0.3);
+    if(!_layers.pad.on||!_padSynth) return;
+    var ch = _currentChords[_chordIdx]||'C';
+    var style = _layers.pad.style;
+    var dur = style===0?'2m':style===1?'1m':'2m';
+    var vel = style===2?0.2:0.3;
+    _padSynth.triggerAttackRelease(_chordNotes(ch,3),dur,time,vel);
   },'2m');
   _padLoop.start(0);
 
@@ -1095,6 +1177,15 @@ function _drawHUD(gesture, W, H) {
     _ctx.shadowBlur=0;
   }
 
+  /* Active layer + style hint — top right */
+  _ctx.font='bold 16px monospace';
+  _ctx.fillStyle='#aaffcc'; _ctx.shadowColor='#33cc66'; _ctx.shadowBlur=6;
+  _ctx.textAlign='right';
+  _ctx.fillText('▶ '+_activeLayer.toUpperCase()+': '+_styleName(_activeLayer), W-16, 30);
+  _ctx.font='12px monospace'; _ctx.fillStyle='#4a8a5a'; _ctx.shadowBlur=0;
+  _ctx.fillText('← swipe wrist → to change style', W-16, 50);
+  _ctx.textAlign='left';
+
   /* Gesture label — bottom left */
   if (gesture && gesture.name!=='--') {
     _ctx.font='bold 30px monospace';
@@ -1138,11 +1229,25 @@ function _onResults(results, ts) {
       var isRight=results.multiHandedness&&results.multiHandedness[h]&&
                   results.multiHandedness[h].label==='Right';
       var g=_classify(lm,isRight);
-      if(h===0){ gesture=g; _detectTap(lm[0].y,ts); }
+      if(h===0){
+        gesture=g;
+        _detectTap(lm[0].y,ts);
+        /* ── Horizontal swipe detection (wrist X) ── */
+        var wx=lm[0].x;
+        if(_lastWristX!==null && _swipeCooldown===0) {
+          var dx=wx-_lastWristX;
+          if(Math.abs(dx)>0.12) {
+            _swipeStyle(dx>0?-1:1); /* mirrored: move right = wrist goes left in raw */
+            _swipeCooldown=25;
+          }
+        }
+        _lastWristX=wx;
+        if(_swipeCooldown>0) _swipeCooldown--;
+      }
       _drawSkeleton(lm,g.color,W,H);
     }
   } else {
-    _lastWristY=null;
+    _lastWristY=null; _lastWristX=null;
   }
 
   /* Hold gesture logic */
@@ -1266,7 +1371,7 @@ window.garciaStop = function() {
   _running=false;
   if(_camera){try{_camera.stop();}catch(e){}}
   if(window.Tone&&Tone.Transport) Tone.Transport.stop();
-  Object.keys(_layers).forEach(function(k){_layers[k]=false;});
+  Object.keys(_layers).forEach(function(k){_layers[k].on=false;});
   _refreshLayers();
   var btn=document.getElementById('garcia-start-btn');
   var ov=document.getElementById('garcia-start-overlay');
@@ -7166,6 +7271,9 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 .gl-icon  { font-size: 1.3rem; }
 .gl-name  { font-size: 0.55rem; letter-spacing: 0.12em; color: #1a4a22; font-weight: 700; }
 .gl-hint  { font-size: 0.75rem; color: #0f2a18; }
+.garcia-style-name { font-size: 0.48rem; letter-spacing: 0.08em; color: #1e5a2a; text-align: center; min-height: 0.7rem; }
+.garcia-active-target { outline: 1px solid color-mix(in srgb, var(--lc) 40%, transparent); }
+.garcia-active-target .garcia-style-name { color: var(--lc); }
 
 /* -- click-hint label under each card -- */
 .home-card-hint {
@@ -9101,26 +9209,31 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS + "\n" + _G
       <div id="garcia-layer-drums" class="garcia-layer" style="--lc:#ff5555">
         <div class="gl-icon">🥁</div>
         <div class="gl-name">DRUMS</div>
+        <div class="garcia-style-name">Basic 4/4</div>
         <div class="gl-hint">✊</div>
       </div>
       <div id="garcia-layer-bass" class="garcia-layer" style="--lc:#ff9933">
         <div class="gl-icon">🎸</div>
         <div class="gl-name">BASS</div>
+        <div class="garcia-style-name">Root</div>
         <div class="gl-hint">☝</div>
       </div>
       <div id="garcia-layer-keys" class="garcia-layer" style="--lc:#ffee44">
         <div class="gl-icon">🎹</div>
         <div class="gl-name">KEYS</div>
+        <div class="garcia-style-name">Block</div>
         <div class="gl-hint">✌</div>
       </div>
       <div id="garcia-layer-lead" class="garcia-layer" style="--lc:#44ff88">
         <div class="gl-icon">🎺</div>
         <div class="gl-name">LEAD</div>
+        <div class="garcia-style-name"></div>
         <div class="gl-hint">🖖</div>
       </div>
       <div id="garcia-layer-pad" class="garcia-layer" style="--lc:#44aaff">
         <div class="gl-icon">🌊</div>
         <div class="gl-name">PAD</div>
+        <div class="garcia-style-name">Whole</div>
         <div class="gl-hint">🖐</div>
       </div>
     </div>
