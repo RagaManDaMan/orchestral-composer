@@ -5996,15 +5996,13 @@ function studioShowTab(tab) {
     });
   }
 
+  var _ALL_SECTIONS = ['section-live', 'section-composer', 'section-garcia'];
+
   window.ocNav = function(section) {
     _hide('home-screen');
-    if(section==='live'){
-      _show('section-live');
-      _hide('section-composer');
-    } else {
-      _hide('section-live');
-      _show('section-composer');
-      // Apply any pending Crystallize data
+    _ALL_SECTIONS.forEach(function(id){ _hide(id); });
+    _show('section-' + section);
+    if (section === 'composer') {
       try {
         var raw = localStorage.getItem('oc_crystallize');
         if (raw) {
@@ -6012,7 +6010,6 @@ function studioShowTab(tab) {
           localStorage.removeItem('oc_crystallize');
           setTimeout(function(){
             _applyComposerData(data);
-            // Auto-click Generate Arrangement after fields are filled
             setTimeout(function(){
               var genBtn = document.querySelector('#generate-btn-wrap button.primary');
               if (!genBtn) genBtn = document.querySelector('#generate-btn-wrap button');
@@ -6027,29 +6024,24 @@ function studioShowTab(tab) {
 
   window.ocGoHome = function() {
     _show('home-screen');
-    _hide('section-live');
-    _hide('section-composer');
+    _ALL_SECTIONS.forEach(function(id){ _hide(id); });
   };
 
   function _hideSections() {
-    var live = document.getElementById('section-live');
-    var comp = document.getElementById('section-composer');
-    if (live && live.style.display !== 'none') live.style.display = 'none';
-    if (comp && comp.style.display !== 'none') comp.style.display = 'none';
+    _ALL_SECTIONS.forEach(function(id){
+      var el = document.getElementById(id);
+      if (el && el.style.display !== 'none') el.style.display = 'none';
+    });
   }
 
-  // Hide immediately if elements already exist, then watch for late mounts
   _hideSections();
   var _sectionObserver = new MutationObserver(function() { _hideSections(); });
   _sectionObserver.observe(document.body, { childList: true, subtree: true });
 
-  // Stop observing once both sections are found and hidden
   function _waitSections() {
-    var live = document.getElementById('section-live');
-    var comp = document.getElementById('section-composer');
-    if (live && comp) {
-      live.style.display = 'none';
-      comp.style.display = 'none';
+    var found = _ALL_SECTIONS.filter(function(id){ return !!document.getElementById(id); });
+    if (found.length === _ALL_SECTIONS.length) {
+      _ALL_SECTIONS.forEach(function(id){ document.getElementById(id).style.display = 'none'; });
       _sectionObserver.disconnect();
     } else {
       setTimeout(_waitSections, 80);
@@ -6367,9 +6359,10 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 }
 #home-cards {
   display: flex;
-  gap: 32px;
+  gap: 24px;
   flex-wrap: wrap;
   justify-content: center;
+  max-width: 1120px;
 }
 
 /* -- Live Recorder card -- RED identity -- */
@@ -6484,6 +6477,33 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 #card-live .home-card-desc { color: #8a5555; }
 #card-composer .home-card-desc { color: #3a5580; }
 
+/* -- GarSIa card -- GREEN identity -- */
+#card-garcia {
+  background: linear-gradient(160deg, #0f2a1a 0%, #1a3a25 60%, #0a1f12 100%);
+  border: 1px solid #1a5c30;
+  box-shadow: var(--shadow-card), 0 0 18px rgba(30,180,80,0.08);
+}
+#card-garcia::after {
+  background: radial-gradient(ellipse at 60% 30%, rgba(30,200,80,0.18) 0%, transparent 70%);
+}
+#card-garcia:hover { border-color: #2aaa55; box-shadow: var(--shadow-card), 0 0 28px rgba(30,200,80,0.22); }
+#card-garcia:active { transform: translateY(1px); }
+#card-garcia .home-card-icon { color: #33cc66; filter: drop-shadow(0 0 8px rgba(30,200,80,0.6)); }
+#card-garcia .home-card-title { color: #66dd99; }
+#card-garcia .home-card-desc { color: #2d6644; }
+
+/* -- GarSIa section topbar -- */
+#section-garcia .section-topbar {
+  background: linear-gradient(to bottom, #0f2a1a, #0a1f12);
+  border-bottom: 1px solid #1a5c30;
+}
+#section-garcia .section-back-btn {
+  background: linear-gradient(to bottom, #1a3a25, #0f2a1a);
+  color: #66dd99; border: 1px solid #1a5c30;
+}
+#section-garcia .section-back-btn:hover { background: linear-gradient(to bottom, #1e4a2e, #0f2a1a); color: #99ffbb; }
+#section-garcia .section-topbar-title { color: #33cc66; }
+
 /* -- click-hint label under each card -- */
 .home-card-hint {
   font-family: var(--font-ui);
@@ -6583,7 +6603,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 }
 
 /* Strip Group chrome from section wrappers and home screen container */
-#section-live, #section-composer {
+#section-live, #section-composer, #section-garcia {
   border: none !important;
   background: transparent !important;
   box-shadow: none !important;
@@ -7177,6 +7197,12 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
       <div class="home-card-icon">♩</div>
       <div class="home-card-title">ORCHESTRAL COMPOSER</div>
       <div class="home-card-desc">AI melody generation · full arrangement<br>Multi-instrument MIDI · raga engine · export</div>
+      <div class="home-card-hint">Click to open</div>
+    </button>
+    <button id="card-garcia" onclick="window.ocNav('garcia')">
+      <div class="home-card-icon">🖐</div>
+      <div class="home-card-title">GarSIa</div>
+      <div class="home-card-desc">Gesture-driven live looper · hand tracking<br>Camera control · BPM sync · no keyboard</div>
       <div class="home-card-hint">Click to open</div>
     </button>
   </div>
@@ -8337,6 +8363,24 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
             return f"Variation failed: {e}"
 
     vary_btn.click(run_vary, inputs=[vary_technique], outputs=[vary_out])
+
+    # -- GarSIa SECTION -------------------------------------------------------
+    with gr.Group(elem_id="section-garcia"):
+        gr.HTML("""
+<div class="section-topbar">
+  <button class="section-back-btn" onclick="window.ocGoHome()">&#9664; HOME</button>
+  <div class="section-topbar-title">🖐&nbsp; GarSIa</div>
+  <div class="section-topbar-status">Gesture Live Looper</div>
+</div>
+<div style="display:flex;align-items:center;justify-content:center;height:60vh;flex-direction:column;gap:1.2rem;color:#2d6644;">
+  <div style="font-size:4rem;filter:drop-shadow(0 0 18px rgba(30,200,80,0.4));">🖐</div>
+  <div style="font-size:1.4rem;color:#66dd99;font-weight:700;letter-spacing:0.12em;">GarSIa</div>
+  <div style="font-size:0.95rem;color:#3a7a50;text-align:center;max-width:340px;line-height:1.6;">
+    Gesture-driven live looper — coming soon.<br>
+    Hand tracking · BPM detection · no keyboard.
+  </div>
+</div>
+""")
 
     # Startup check -- feeds the hidden markdown (for wiring) + status box
     def _startup_check():
