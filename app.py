@@ -7790,7 +7790,7 @@ input[type="radio"]    { accent-color: var(--accent) !important; }
 }
 """
 
-with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
+with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS + "\n" + _GARCIA_JS) as demo:
 
     # -- Home screen overlay ---------------------------------------------------
     gr.HTML("""
@@ -9085,7 +9085,6 @@ with gr.Blocks(title="Orchestral Composer", css=_CSS, js=_TOOLTIP_JS) as demo:
         return badge, status_txt
 
     demo.load(_startup_check, outputs=[ollama_status, out_status])
-    demo.load(fn=None, js=_GARCIA_JS)
     # Push Ollama status to the header pill after page load
     demo.load(
         fn=None,
